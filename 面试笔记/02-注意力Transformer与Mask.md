@@ -24,6 +24,13 @@ weights = softmax(scores, 在「被 attend 的那一维」上做)
 output = weights @ V
 ```
 
+常用矩阵写法（单头）：
+
+```
+Q = X W_Q,   K = X W_K,   V = X W_V
+Attn(X) = softmax( QK^T / sqrt(d_k) ) V
+```
+
 若 Q 形状 `(batch, Lq, d)`，K/V `(batch, Lk, d)`，则 **weights** `(batch, Lq, Lk)`，**output** `(batch, Lq, d)`：**输出序列长仍是 Lq**，最后一维仍是 d（多头时再拼接/投影）。
 
 ### 面试怎么答
@@ -65,6 +72,11 @@ Softmax 把任意实数分数变成 **非负、和为 1** 的权重，使输出�
 ## 6. 多头注意力（MHA）
 
 把 `d_model` 切成 h 份，每头一份 `d_k`，各头并行做 attention，再 concat + `W_O`。
+
+```
+head_i = Attention(X W_Q^i, X W_K^i, X W_V^i)
+MHA(X) = Concat(head_1, ..., head_h) W_O
+```
 
 **直觉**：不同头可分工（局部搭配、长距指代等），比单头超大维点积更好优化。与 **MQA/GQA/MLA**（为省 KV）的关系见 `06`。
 

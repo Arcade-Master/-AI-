@@ -10,10 +10,10 @@
 
 一块卡上，训练一步通常要扛：
 
-1. **权重**（BF16/FP16 常 2 byte/参数）  
-2. **梯度**（常与权重同量级、同 dtype 策略）  
-3. **优化器状态**（Adam 的 m、v 常见 **FP32**，约 **8 byte/参数** 量级理解两矩）  
-4. **激活**（与 batch、序列长、隐藏维、层数有关；**长序列 + 标准 Attention 物化 L×L 分数矩阵** 时常是 OOM 首因）  
+1. **权重**（BF16/FP16 常 2 byte/参数）
+2. **梯度**（常与权重同量级、同 dtype 策略）
+3. **优化器状态**（Adam 的 m、v 常见 **FP32**，约 **8 byte/参数** 量级理解两矩）
+4. **激活**（与 batch、序列长、隐藏维、层数有关；**长序列 + 标准 Attention 物化 L×L 分数矩阵** 时常是 OOM 首因）
 5. **临时区**：通信 buffer、cuBLAS workspace、分配器碎片等
 
 **推理**：主要是 **权重 + KV Cache + 少量激活**。
@@ -43,7 +43,7 @@
 ### 2.1 激活：为何与 L、L² 有关
 
 - 与 **B（batch）·S（序列）·H（隐藏）·层数** 成正比的 **张量链** 总要占一份。  
-- 若标准实现把注意力 **分数矩阵整块物化**（materialize，即真的分配出整块显存）为 **`B × heads × S × S`**，则 **S 翻倍约 ×4** 这一项。  
+- 若标准实现把注意力 **分数矩阵整块物化**（materialize，即真的分配出整块显存）为 `**B × heads × S × S`**，则 **S 翻倍约 ×4** 这一项。  
 - **FlashAttention** 用分块在 **片上 SRAM** 多算少写 **HBM**，降低 **峰值与带宽压力**；不是把渐近复杂度 magically 变成 O(S)。
 
 ### 2.2 多卡之后：激活为何常常「不除以卡数」
@@ -106,11 +106,13 @@
 
 ## 6. 数据并行 vs 模型并行：数据流与梯度（对照记）
 
-| | 数据并行 | 模型并行（TP/PP 等） |
-|---|----------|----------------------|
-| 每卡模型 | **完整副本** | **一块子结构** |
-| 数据 | **不同子 batch** | **同一条样本在卡间传激活（PP）或协作算（TP/SP）** |
-| 梯度 | **对本地数据算完 → all-reduce 对齐** | **在分片边界用 collective 拼出完整梯度语义** |
+
+|      | 数据并行                        | 模型并行（TP/PP 等）                  |
+| ---- | --------------------------- | ------------------------------ |
+| 每卡模型 | **完整副本**                    | **一块子结构**                      |
+| 数据   | **不同子 batch**               | **同一条样本在卡间传激活（PP）或协作算（TP/SP）** |
+| 梯度   | **对本地数据算完 → all-reduce 对齐** | **在分片边界用 collective 拼出完整梯度语义** |
+
 
 题面若写「模型冰箱」，一般是把 **模型并行** 打错字。
 
@@ -120,11 +122,13 @@
 
 **共同思想**：数据并行团队里，**优化器状态 / 梯度 / 参数** 不必每卡全存，改 **分片 + 需要时 all-gather / reduce-scatter**。
 
-| 阶段 | 多分片了什么 | 直觉 |
-|------|----------------|------|
-| ZeRO-1 | 优化器状态 | 省一大块 |
-| ZeRO-2 | + 梯度 | 再省 |
-| ZeRO-3 | + 参数 | 单卡常驻最少，但 **通信最多** |
+
+| 阶段     | 多分片了什么 | 直觉                |
+| ------ | ------ | ----------------- |
+| ZeRO-1 | 优化器状态  | 省一大块              |
+| ZeRO-2 | + 梯度   | 再省                |
+| ZeRO-3 | + 参数   | 单卡常驻最少，但 **通信最多** |
+
 
 **FSDP**：PyTorch 原生 **分片 DDP**，思想接近 ZeRO，生态集成好；**DeepSpeed** 更像「训练框架 + 一堆开关（ZeRO、offload、pipeline…）」。
 
@@ -150,8 +154,8 @@ world_size = TP × PP × CP × DP
 DP = world_size / (TP × PP × CP)
 ```
 
-- **`TP×PP×CP`**：一个 **完整前向** 在模型维上占多少张卡（常称 **model-parallel width**）。  
-- **`DP`**：同样的模型逻辑 **并行复制多少份** 去吃不同 batch。  
+- `**TP×PP×CP**`：一个 **完整前向** 在模型维上占多少张卡（常称 **model-parallel width**）。  
+- `**DP`**：同样的模型逻辑 **并行复制多少份** 去吃不同 batch。  
 - 手填时 **先选 TP、PP、CP**，**DP 只能由上式推出**；若除不尽，**world 拆不干净**，启动即 assert。
 
 **SP（Sequence Parallel）**：不是上式里的独立因子；开在 **TP 组内部**，省 LN/残差一带与序列成比例的激活；常见 **要求 TP>1**，否则无意义或自动关。
@@ -168,21 +172,110 @@ global_batch_size ≈ micro_batch_size × DP × gradient_accumulation_steps
 
 （各 repo 变量名可能叫 `global_batch`、`num_micro_batches` 等，面试说 **结构** 即可。）
 
-- **`micro_batch_size`**：单次前向的 batch 维大小；顶 **激活**，也影响 **算子效率**。  
-- **`DP`**：多少路独立数据并行。  
-- **`gradient_accumulation_steps`**：多步前向-反向 **累加梯度** 再 `optimizer.step`，**等效放大 global batch** 而不按同比例放大单步激活峰值。
+- `**micro_batch_size`**：单次前向的 batch 维大小；顶 **激活**，也影响 **算子效率**。  
+- `**DP`**：多少路独立数据并行。  
+- `**gradient_accumulation_steps`**：多步前向-反向 **累加梯度** 再 `optimizer.step`，**等效放大 global batch** 而不按同比例放大单步激活峰值。
 
 **易错点**：ZeRO / TP **不会自动帮你改 global_batch 定义**；global_batch 是 **数据调度语义**，靠 **sampler + 累积步** 与并行度配平。
 
 ### 8.2 微型数值例子
 
-`world_size = 32`，`TP=2, PP=4, CP=1` → 一组模型并行占 **8** 张卡 → **`DP = 4`**。  
-`micro_batch_size=1`，`gradient_accumulation_steps=8` → **`global_batch_size ≈ 1×4×8 = 32`**。  
-把 **`TP=4, PP=2`** 仍得 **8 张一组**，**DP 仍为 4**——说明 **先定 TP×PP×CP 再除 world** 才是硬约束。
+`world_size = 32`，`TP=2, PP=4, CP=1` → 一组模型并行占 **8** 张卡 → `**DP = 4`**。  
+`micro_batch_size=1`，`gradient_accumulation_steps=8` → `**global_batch_size ≈ 1×4×8 = 32`**。  
+把 `**TP=4, PP=2**` 仍得 **8 张一组**，**DP 仍为 4**——说明 **先定 TP×PP×CP 再除 world** 才是硬约束。
 
 ### 面试怎么答
 
 「world = TP×PP×CP×DP；DP 是除出来的；global_batch 用 micro×DP×累积步配；SP 不是独立一维。」
+
+---
+
+## 再讲一遍
+
+总卡数 (World Size) = TP × PP × DP
+GBS(梯度累加步数) = MBS × DP × GAS
+
+注意力头数整除 TP：Num_Attention_Heads % TP == 0。
+（如果有 GQA/MQA，KV 头数也必须能被 TP 整除）
+
+隐藏层维度整除 TP：Hidden_Size % TP == 0
+
+模型总层数整除 PP：Num_Layers % PP == 0
+（PP 要求每个 pipeline stage 分配到相同数量的 Transformer 层）。
+
+(如果开启 SP) 序列长度整除 TP：Seq_Length % TP == 0
+
+
+
+能跑起来不报错只是第一步，要跑得快（高 MFU），还需要遵守以下潜规则：
+
+#### 1. Pipeline 气泡约束：GAS 必须足够大
+
+- **制约关系**：流水线并行（PP）是有“气泡”（Bubble）的。为了掩盖气泡，必须有足够多的 Microbatch（即 GAS）在流水线里跑。
+
+**经验公式**：**GAS 必须** ≥ **PP**。
+
+**最佳实践**：为了保持高效率，通常要求 **GAS** ≥ **4 × PP**，最好是 **8 × PP**。
+
+- *防错提醒：* 如果算出来的 GAS < PP，Megatron 可能会抛出警告，且你的 GPU 利用率会极低（都在互相等）。
+
+#### 2. TP（张量并行）的物理边界：不出节点
+
+- **制约关系**：TP 需要极大量的通信（All-Reduce）。因此，**TP 组内的卡必须有极高的带宽（NVLink）**。
+- **最佳实践**：**TP 的大小永远不要超过单台机器的 GPU 数量！**（目前主流是单机 8 卡，所以 TP 最大设为 8。跨机做 TP 速度会慢到让人怀疑人生）。
+
+#### 3. SP（序列并行）的开启条件
+
+- **制约关系**：SP 本质上是对 TP 的显存优化（把 LayerNorm 和 Dropout 在序列维度上切分开）。
+- **前提条件**：**必须 TP > 1** 才能开启 SP（通常设 --sequence-parallel）。如果 TP=1 开启 SP 会报错。
+
+
+
+### 来一道应用题🤡
+
+假设你要在 **64张 A100 (8机8卡)** 上训练一个 **Llama-2-7B**。  
+模型参数：32 层 (Layers)，32 个头 (Heads)，算法要求 GBS = 1024。
+
+```
+**第一步：确定 TP (Tensor Parallel)**
+
+- TP 最好不出节点（<=8）。看模型参数，32 头可以被 2, 4, 8 整除。
+- 假设模型不算太大，我们设 **TP = 4**。
+
+**第二步：确定 PP (Pipeline Parallel)**
+
+- 总层数是 32。PP 可以是 1, 2, 4, 8。
+- 假设为了装下模型（或者分摊显存），我们设 **PP = 4**。
+
+**第三步：算出 DP (Data Parallel)**
+
+- 卡数公式：64 = TP(4) × PP(4) × DP
+- 算出 **DP = 4**。
+
+**第四步：确定 MBS (Micro Batch Size)**
+
+- MBS 决定了单卡的显存占用。你需要慢慢调大 MBS，直到快要 OOM（爆显存）为止。
+- 假设经过测试，**MBS = 4** 时显存利用率最好。
+
+**第五步：验证 GBS 和 GAS**
+
+- Batch 公式：GAS = GBS / (MBS × DP)
+- 代入数据：GAS = 1024 / (4 × 4) = 1024 / 16 = **64**
+- 检查能否整除？64 是整数，**不报错。**
+- 检查流水线效率？GAS (64)≥ 8 × PP (4)，**效率极高。**
+
+
+
+**最终安全参数配置：**  
+--tensor-model-parallel-size 4  
+--pipeline-model-parallel-size 4  
+--micro-batch-size 4  
+--global-batch-size 1024  
+*(DP=4 会由 Megatron 自动推导，不用写)*
+
+```
+
+
 
 ---
 
@@ -204,9 +297,9 @@ global_batch_size ≈ micro_batch_size × DP × gradient_accumulation_steps
 
 ## 11. Megatron 断言速记（与第 8 节同型，考场 30 秒版）
 
-- **`world_size = TP × PP × CP × DP`**；**`DP` 只能推、不要手填打架**。  
-- **`global_batch_size`** 与 **`micro_batch_size × DP × gradient_accumulation_steps`** 对齐（具体名字以版本 README 为准）。  
-- **`sequence_parallel`** 常与 **`TP>1`** 绑定。  
+- `**world_size = TP × PP × CP × DP`**；`**DP` 只能推、不要手填打架**。  
+- `**global_batch_size`** 与 `**micro_batch_size × DP × gradient_accumulation_steps`** 对齐（具体名字以版本 README 为准）。  
+- `**sequence_parallel**` 常与 `**TP>1**` 绑定。  
 - **PP / interleaved / MoE-EP** 会再叠整除条件——**以该版本 `arguments.py` 的 assert 为准**。
 
 ---
@@ -216,4 +309,5 @@ global_batch_size ≈ micro_batch_size × DP × gradient_accumulation_steps
 - **账单**：状态（12P 量级口算）+ 激活（看 **B,S,H** 与是否 **L²**）+ KV（推理）。  
 - **并行**：DDP 扩数据；TP/PP 扩模型；ZeRO 分状态。  
 - **Flash**：减 **HBM** 往返与峰值。  
-- **Megatron**：**`world = TP×PP×CP×DP`**；**global_batch ≈ micro×DP×累积步**；SP 不是独立一维。
+- **Megatron**：`**world = TP×PP×CP×DP`**；**global_batch ≈ micro×DP×累积步**；SP 不是独立一维。
+
