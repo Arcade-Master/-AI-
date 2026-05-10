@@ -1,0 +1,224 @@
+2. 了解 DeepSeek-R1 吗？介绍一下？
+    * R1 的核心特点是什么？
+    * 为什么 R1 在推理能力上表现强？
+    * R1 和传统 instruction model 有什么区别？
+3. R1 的 MLA（Multi-head Latent Attention）是如何实现 KV-Cache 节约的？
+    * KV Cache 为什么会成为瓶颈？
+    * MLA 和 MHA / MQA / GQA 的区别？
+    * MLA 的低秩压缩思想是什么？
+    * 为什么 MLA 不会严重损伤性能？
+4. R1 在 SFT 时“冷启动”的目的是什么？
+    * 为什么不能直接 RL？
+    * 冷启动数据的作用？
+    * 冷启动如何影响模型稳定性与可读性？
+5. 什么是位置编码（Positional Encoding）？
+    * 为什么 Transformer 需要位置编码？
+    * 解释 RoPE（Rotary Position Embedding）
+    * RoPE 为什么适合长文本？
+    * RoPE 外推为什么会失效？
+6. 一个 14B 模型：
+    * 推理需要多少显存？
+    * 训练需要多少显存？
+    * BF16 / FP16 / INT4 下分别是多少？
+    * KV Cache 大小如何计算？
+7. 显存占用和哪些因素相关？
+8. 什么是大模型“灾难性遗忘”（Catastrophic Forgetting）？
+    * 为什么 SFT 容易导致遗忘？
+    * 如何缓解？
+    * LoRA 为什么能减轻遗忘？
+9. BF16、FP16、FP32 对比
+    * exponent / mantissa 区别
+    * 为什么 BF16 更稳定？
+    * 为什么 FP16 更容易 overflow？
+    * 为什么训练通常保留 FP32 master weights？
+10. Adam、AdamW 原理
+
+* 一阶矩、二阶矩是什么？
+* bias correction 为什么需要？
+* AdamW 和 Adam 的核心区别？
+* decoupled weight decay 是什么？
+
+11. DeepSpeed 的三个阶段（ZeRO-1 / ZeRO-2 / ZeRO-3）
+
+* 每个阶段切分了什么？
+* 显存分别节省多少？
+* 通信开销如何变化？
+* 为什么 ZeRO-3 更慢？
+
+12. 写一下 Attention 公式（最好代码实现一下）
+
+* Q、K、V 的含义是什么？
+* Attention 输出维度如何变化？
+* 多头 Attention 如何实现？
+
+13. 训练时为什么需要 mask？
+
+* causal mask 的作用是什么？
+* padding mask 的作用是什么？
+* 推理时还需要 mask 吗？
+* 推理和训练时 sequence length 一样吗？
+* prefill 和 decode 阶段有什么区别？
+
+14. Transformer 和传统 seq2seq 模型有什么区别？
+
+* Transformer 为什么能并行？
+* RNN/LSTM 为什么训练慢？
+* Transformer 为什么长距离建模更强？
+* Transformer 的缺点是什么？
+
+15. Attention 为什么要除以 √dk？
+
+* dk 的含义是什么？
+* 为什么不缩放会导致 softmax 饱和？
+* attention 中还有哪些 scale 技巧？
+
+16. Attention 中 softmax 的作用
+
+* softmax 公式
+* 为什么要减去最大值？
+* 数值稳定性原理
+* 换别的激活函数是否可行？
+
+17. 解释数值上溢（overflow）和下溢（underflow）
+
+* FP16 为什么更容易出现？
+* loss scaling 原理是什么？
+* 梯度爆炸和数值爆炸有什么区别？
+
+18. 讲一下 prompt engineering 的经验
+
+* 如何判断 prompt 是否达标？
+* 如何评估 prompt？
+* few-shot / CoT / role prompt 区别？
+* prompt 为什么会影响输出稳定性？
+
+19. 讲一下 SFT（Supervised Fine-Tuning）
+
+* loss 是对哪部分 token 计算的？
+* 为什么 instruction 部分通常 mask 掉？
+* label shift 是什么？
+* teacher forcing 是什么？
+
+20. 讲一下 DeepSpeed
+
+* DeepSpeed 的核心优化有哪些？
+* ZeRO、offload、pipeline parallel 是什么？
+* DeepSpeed 和 FSDP 区别？
+
+21. 训练一个 7B 模型需要多少显存？
+
+* 全量训练需要多少？
+* LoRA 需要多少？
+* 不同 ZeRO 阶段节省多少？
+* activation checkpoint 能节省多少？
+
+22. 训练模型时用了几张卡？
+
+* 遇到过哪些异常中断问题？
+* NCCL timeout 如何排查？
+* CUDA OOM 怎么定位？
+* deadlock 怎么处理？
+* 显存碎片化是什么？
+
+23. FlashAttention 原理是什么？
+
+* 为什么它更省显存？
+* online softmax 是什么？
+* 为什么 IO-aware 很重要？
+
+24. LoRA 原理是什么？
+
+* 为什么低秩更新有效？
+* rank 如何选择？
+* LoRA 为什么省显存？
+
+25. RLHF、DPO、GRPO 区别
+
+* reward model 是什么？
+* PPO 为什么复杂？
+* DPO 为什么更稳定？
+* GRPO 为什么适合推理模型？
+
+26. 推理阶段 Prefill 和 Decode 区别
+
+* 哪个更耗算力？
+* 哪个更受 memory bandwidth 限制？
+* 为什么 decode 很难利用 GPU？
+
+27. MoE（Mixture of Experts）原理
+
+* 为什么 MoE 能降低训练成本？
+* expert routing 怎么做？
+* load balance 为什么重要？
+* MoE 为什么通信压力大？
+
+28. 并行训练相关
+
+* Tensor Parallel
+* Pipeline Parallel
+* Data Parallel
+* Sequence Parallel
+* 各自适合什么场景？
+
+29. Gradient Checkpoint 原理
+
+* 为什么能省显存？
+* 为什么会增加计算量？
+* checkpoint 哪些层最划算？
+
+30. QKV 为什么拆成三个矩阵？
+
+* 为什么不能只用一个？
+* self-attention 和 cross-attention 区别？
+
+31. 为什么 Attention 复杂度是 O(n²)？
+
+* 复杂度瓶颈在哪里？
+* 长上下文为什么困难？
+* 有哪些优化方法（FlashAttention / Linear Attention / Sparse Attention）？
+
+32. KV Cache 机制
+
+* 为什么推理时需要 KV Cache？
+* 为什么只 cache K/V？
+* cache 命中逻辑是什么？
+
+33. 长上下文优化
+
+* RoPE scaling
+* YaRN
+* NTK-aware scaling
+* position interpolation
+
+34. 模型量化
+
+* INT8 / INT4 原理
+* GPTQ、AWQ、SmoothQuant 区别
+* 量化为什么会掉点？
+
+35. 模型评测
+
+* perplexity 是什么？
+* benchmark 和真实效果为什么不同？
+* 如何设计评测集？
+
+36. 工程实战问题
+
+* 如何定位训练变慢？
+* GPU 利用率低怎么办？
+* dataloader 为什么会成为瓶颈？
+* 如何分析显存泄漏？
+
+37. 部署相关
+
+* vLLM 原理
+* continuous batching 是什么？
+* paged attention 是什么？
+* 为什么吞吐会随 batch 增加？
+
+38. 实际项目问题
+
+* 做过哪些数据清洗？
+* 如何处理脏数据？
+* 如何构造 instruction 数据？
+* 如何发现 hallucination？
