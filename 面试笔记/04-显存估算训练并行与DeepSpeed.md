@@ -180,8 +180,8 @@ global_batch_size ≈ micro_batch_size × DP × gradient_accumulation_steps
 
 ### 8.2 微型数值例子
 
-`world_size = 32`，`TP=2, PP=4, CP=1` → 一组模型并行占 **8** 张卡 → `**DP = 4`**。  
-`micro_batch_size=1`，`gradient_accumulation_steps=8` → `**global_batch_size ≈ 1×4×8 = 32`**。  
+`world_size = 32`，`TP=2, PP=4, CP=1` → 一组模型并行占 **8** 张卡 → `**DP = 4`**。**  
+`**micro_batch_size=1`，`gradient_accumulation_steps=8` → `**global_batch_size ≈ 1×4×8 = 32`**。  
 把 `**TP=4, PP=2**` 仍得 **8 张一组**，**DP 仍为 4**——说明 **先定 TP×PP×CP 再除 world** 才是硬约束。
 
 ### 面试怎么答
@@ -205,8 +205,6 @@ GBS(梯度累加步数) = MBS × DP × GAS
 
 (如果开启 SP) 序列长度整除 TP：Seq_Length % TP == 0
 
-
-
 能跑起来不报错只是第一步，要跑得快（高 MFU），还需要遵守以下潜规则：
 
 #### 1. Pipeline 气泡约束：GAS 必须足够大
@@ -228,8 +226,6 @@ GBS(梯度累加步数) = MBS × DP × GAS
 
 - **制约关系**：SP 本质上是对 TP 的显存优化（把 LayerNorm 和 Dropout 在序列维度上切分开）。
 - **前提条件**：**必须 TP > 1** 才能开启 SP（通常设 --sequence-parallel）。如果 TP=1 开启 SP 会报错。
-
-
 
 ### 来一道应用题🤡
 
@@ -275,8 +271,6 @@ GBS(梯度累加步数) = MBS × DP × GAS
 
 ```
 
-
-
 ---
 
 ## 9. Gradient Checkpointing 与 FlashAttention
@@ -299,7 +293,7 @@ GBS(梯度累加步数) = MBS × DP × GAS
 
 - `**world_size = TP × PP × CP × DP`**；`**DP` 只能推、不要手填打架**。  
 - `**global_batch_size`** 与 `**micro_batch_size × DP × gradient_accumulation_steps`** 对齐（具体名字以版本 README 为准）。  
-- `**sequence_parallel**` 常与 `**TP>1**` 绑定。  
+- `**sequence_parallel`** 常与 `**TP>1**` 绑定。  
 - **PP / interleaved / MoE-EP** 会再叠整除条件——**以该版本 `arguments.py` 的 assert 为准**。
 
 ---
