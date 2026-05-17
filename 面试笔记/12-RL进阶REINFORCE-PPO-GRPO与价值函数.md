@@ -1,7 +1,7 @@
 # 12｜策略梯度、GAE、PPO、GRPO、Value（计算向）
 
-**建议阅读顺序（本篇内部）**：**策略梯度无偏形式** → **baseline 与 Value** → **GAE（优势怎么从轨迹里挤出来）** → **PPO clip 目标每一项** → **GRPO：组内基线、loss 形态、和 PPO 的取舍** → **REINFORCE++ 怎么答不翻车**。  
-与 **`05`** 分工：`05` 讲 **对齐管线与 DPO/RLAIF 数据语义**；本篇讲 **「公式级 + 一步训练循环」**。
+**建议阅读顺序（本篇内部）**：**REINFORCE / Value / GAE** → **PPO clip** → **GRPO 组内基线** → **GSPO 序列级 ratio** → **DAPO / VAPO 变体** → **REINFORCE++**。  
+与 **`05`** 分工：`05` 讲 **管线选型与面试总括**；本篇讲 **公式与一步训练循环**。
 
 ---
 
@@ -130,9 +130,73 @@ A_i = (R_i - μ) / (σ + eps)   或   A_i = R_i - μ
 
 ---
 
+## 7. GSPO：序列级 importance ratio（长序列方差）
+
+**设定**：与 GRPO 相同——对 prompt `x` 采 **G 条**完整回答 `y_i`，得标量奖励 `R_i`，组内 baseline 得优势 `A_i`（如 `A_i = (R_i - μ_G) / (σ_G + ε)`）。
+
+**GRPO/PPO 在长序列上的问题**：token 级 importance  
+`r_{i,t}(θ) = π_θ(y_{i,t}|·) / π_{θ_old}(y_{i,t}|·)`  
+在 **|y_i| 很大** 时，各 token 比率 **独立波动、相乘进目标**，梯度估计 **方差随长度恶化**。
+
+**GSPO 的核心**：定义 **序列级** 比率（几何平均，等价于平均 log-ratio）：
+
+```
+s_i(θ) = ( π_θ(y_i|x) / π_{θ_old}(y_i|x) )^{1/|y_i|}
+       = exp( (1/|y_i|) Σ_t log [ π_θ(y_{i,t}|·) / π_{θ_old}(y_{i,t}|·) ] )
+```
+
+在 **序列粒度** 做 clip 与策略梯度加权（实现细节依仓库，面试抓 **「从 token 收到 sequence」** 即可）。直觉：**一条回答一个 trust-region 步长**，长链不会被成百上千个 token-ratio **放大噪声**。
+
+**Group Size G 与收敛（与 GRPO 共用）**：
+
+- **μ_G、σ_G** 用 **G 条样本** 估得越稳，**优势噪声越小**；G↑ 常 **加快稳定收敛**，代价是 **G 倍 rollout**。  
+- 若 G 条 **奖励全相同**，中心化后 **A_i≈0**，该 prompt **几乎无梯度**——训练实现里常 **丢弃该组**（与 DAPO dynamic sampling 同思路）。
+
+**相对 DPO**：DPO **不采样 rollout**，优化 **离线偏好对** 的 log-ratio；GSPO **在线 RL**，优化 **可验证奖励下的策略**，并针对 **长生成** 改 **importance 粒度**。二者 **问题设定不同**，不要答「GSPO 是 DPO 的改进版」。
+
+### 面试怎么答
+
+「GSPO 保留 GRPO 的组采样与组内 baseline，把 PPO/GRPO 的 token 级 importance 收到序列级几何平均比率，降低长回答 RL 的方差；G 越大 baseline 越稳但越贵。」
+
+---
+
+## 8. GRPO 变体：DAPO、VAPO（相对 GRPO 改在哪）
+
+### DAPO（在 GRPO 上叠工程增强）
+
+常见组件（名称因实现略有出入）：
+
+1. **Asymmetric clip（Clip-Higher）**：`clip(r, 1-ε_low, 1+ε_high)` 且 **ε_low < ε_high**，允许 **适度放大** 好轨迹概率，又限制坏轨迹。  
+2. **Dynamic sampling**：仅训练 **组内奖励有方差** 的 prompt；**全对/全错** 的组 **不浪费 backward**。  
+3. **Token-level loss 归一化 / 过长惩罚**：缓解 **长短回答混 batch** 时梯度尺度不均。
+
+相对 **朴素 GRPO**：**有效梯度密度更高、训练更稳**；超参更多（ε_low/ε_high、采样阈值等）。
+
+### VAPO（value-augmented，与「去 critic」的 GRPO 对照）
+
+**GRPO 路线**：用 **组内均值** 代替 `V(s)`。  
+**VAPO 路线**：认为 **复杂推理** 仍需要 **靠谱的价值估计**，通过：
+
+- **Value pretraining**（先让 `V` 像样）  
+- **Decoupled-GAE / Length-Adaptive GAE**（长短序列混在一起时 **优势不偏**）  
+- 仍可结合 **group sampling、clip-higher、token-level PG** 等
+
+相对 GRPO：**多训一个 value 网络，换更低方差、有时更快达到高 reward**；工程更重。
+
+| | GRPO | DAPO | GSPO | VAPO |
+|---|------|------|------|------|
+| Critic | 通常无 | 通常无 | 通常无 | **有，且重点优化** |
+| 组采样 G | 核心 | 核心 + **过滤无效组** | 核心 | 可有 |
+| Importance | 常 token 级 | 常 token 级 + 非对称 clip | **序列级** | token/序列依实现 |
+| 典型场景 | 可验证奖励推理 | 大规模 RL 提效 | **长 CoT / 长推理** | 高难度推理 benchmark |
+
+---
+
 ## 本篇小结
 
 - 策略梯度 = **`∇logπ · 回报`**；baseline = **方差控制**。  
 - GAE = **`δ_t` 的 γλ 加权和**。  
 - PPO = **`min(rA, clip(r)A)` + critic + 熵/KL**。  
-- GRPO = **G 样本组内基线 + 序列 logπ 加权**。
+- GRPO = **G 样本组内基线 + 序列 logπ 加权**。  
+- **GSPO** = **序列级** `s_i(θ)` 降 **长链 token-ratio 方差**。  
+- **DAPO / VAPO** = GRPO 上的 **采样-clip** 与 **value** 两条增强路线。

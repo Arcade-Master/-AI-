@@ -150,9 +150,11 @@
 **硬等式（念这个比背报错字符串稳）**：
 
 ```
-world_size = TP × PP × CP × DP
+world_size = TP × PP × CP × DP        （Dense 常见写法）
 DP = world_size / (TP × PP × CP)
 ```
+
+**MoE + EP**：是否写成 `world = TP×PP×CP×EP×DP` 一类，**随框架与版本**；见 **§8.3**。
 
 - `**TP×PP×CP**`：一个 **完整前向** 在模型维上占多少张卡（常称 **model-parallel width**）。  
 - `**DP`**：同样的模型逻辑 **并行复制多少份** 去吃不同 batch。  
@@ -184,9 +186,26 @@ global_batch_size ≈ micro_batch_size × DP × gradient_accumulation_steps
 `**micro_batch_size=1`，`gradient_accumulation_steps=8` → `**global_batch_size ≈ 1×4×8 = 32`**。  
 把 `**TP=4, PP=2**` 仍得 **8 张一组**，**DP 仍为 4**——说明 **先定 TP×PP×CP 再除 world** 才是硬约束。
 
+### 8.3 Expert Parallel（EP）：干什么、怎么设、常见约束
+
+**干什么**：MoE 每层有 **E 个 expert**，每个 expert 一套 FFN 权重。**EP（Expert Parallel）** 把 **expert 权重切到多张卡** 上存，每张卡只驻 **一部分 expert**。  
+前向时，token 被 router 指到某个 expert，若该 expert **不在本卡**，就要通过 **all-to-all / 等价 collective** 把 **token 表示（或梯度）送到持权重的那张卡** 上算，再传回来——所以 EP **省「单卡 expert 权重显存」**，但 **吃机间/机内通信**。
+
+**怎么设（口述口径）**：
+
+1. 先定 **MoE 层数、总 expert 数 `E`、每 token top-k**。  
+2. 选 **`expert_model_parallel_size`（EP）**：希望 **每张卡挂几个 expert 的权重**。  
+3. **硬约束（Megatron 系里非常常见）**：**`num_experts % EP == 0`**——否则 expert 无法均匀分片，启动会 assert。  
+4. **world 与并行维**：带 MoE 时，**是否把 EP 乘进「模型并行宽度」、DP 怎么推**，**随 Megatron / NeMo / Bridge 版本与是否 MoE 而异**；面试答 **「EP 与 TP/PP/CP/DP 同属并行拓扑，必须满足 `world` 被各维乘积整除；细节以当前仓库 `parallel_state.py` + `validate_args` 为准」** 比背一个可能过期的连乘式更稳。  
+5. **物理拓扑**：EP 常伴随 **大量 token↔expert 路由通信**；**机内 NVLink** 远好于跨机慢网。和 **TP** 同用时，要留意 **CUDA stream / max connections** 类环境变量冲突（部分版本文档会警告）。
+
+**和 ZeRO 的关系**：ZeRO 主要切 **优化器状态/梯度/参数副本**；**EP 切的是 expert 这一块的「模型分片语义」**。大 MoE 训练里常见 **EP +（ZeRO 或 FSDP）+ TP** 混用，**调参面大**，先跑通小规模再扩。
+
 ### 面试怎么答
 
 「world = TP×PP×CP×DP；DP 是除出来的；global_batch 用 micro×DP×累积步配；SP 不是独立一维。」
+
+MoE 训练再加一句：**「EP 把 expert 权重分卡存，省单卡权重大头；要付 all-to-all；`E` 必须能整除 EP；拓扑以仓库 assert 为准。」**
 
 ---
 
@@ -294,7 +313,7 @@ GBS(梯度累加步数) = MBS × DP × GAS
 - `**world_size = TP × PP × CP × DP`**；`**DP` 只能推、不要手填打架**。  
 - `**global_batch_size`** 与 `**micro_batch_size × DP × gradient_accumulation_steps`** 对齐（具体名字以版本 README 为准）。  
 - `**sequence_parallel`** 常与 `**TP>1**` 绑定。  
-- **PP / interleaved / MoE-EP** 会再叠整除条件——**以该版本 `arguments.py` 的 assert 为准**。
+- **PP / interleaved / MoE-EP** 会再叠整除条件——**以该版本 `arguments.py` 的 assert 为准**（MoE 常见：**`num_experts % EP == 0`**）。
 
 ---
 
@@ -303,5 +322,5 @@ GBS(梯度累加步数) = MBS × DP × GAS
 - **账单**：状态（12P 量级口算）+ 激活（看 **B,S,H** 与是否 **L²**）+ KV（推理）。  
 - **并行**：DDP 扩数据；TP/PP 扩模型；ZeRO 分状态。  
 - **Flash**：减 **HBM** 往返与峰值。  
-- **Megatron**：`**world = TP×PP×CP×DP`**；**global_batch ≈ micro×DP×累积步**；SP 不是独立一维。
+- **Megatron**：`**world = TP×PP×CP×DP`**（Dense）；**MoE 时加 EP 等维** 见 **§8.3**；**global_batch ≈ micro×DP×累积步**；SP 不是独立一维。
 

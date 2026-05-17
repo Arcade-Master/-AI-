@@ -1,7 +1,7 @@
 # 05｜SFT、偏好对齐（RLHF/DPO/GRPO）、PEFT、遗忘、RLAIF
 
-**建议阅读顺序（本篇内部）**：**SFT 在优化什么、mask 怎么画** → **teacher forcing / 训练目标与推理分布**（和 exposure bias、RL 的关系）→ **LoRA 等 PEFT** → **RLHF 数据与目标（RM + PPO）** → **DPO：偏好数据怎么来、loss 每一项在干什么、和在线 RL 的本质差别** → **GRPO：和 PPO 差在哪、优势从哪来**（逐步计算见 `**12`**）→ **RLAIF：AI 裁判介入点、数据流、后面接什么 loss** → **灾难性遗忘**。  
-**PPO/GRPO 的逐步计算、GAE、REINFORCE 细节** 见 `**12`**；本篇把 **「和 SFT 怎么衔接 + 面试能展开讲」** 说满。
+**建议阅读顺序（本篇内部）**：**SFT** → **teacher forcing / exposure bias** → **LoRA / QLoRA / LoRA+ / DoRA** → **RLHF（RM + PPO）** → **DPO** → **GRPO** → **GSPO / DAPO / VAPO 等变体**（公式见 **`12`**）→ **RLAIF** → **遗忘**。  
+**PPO / GAE / GRPO / GSPO 计算细节** 见 **`12`**；**Agent 推理模式（ReAct / Plan&Execute / Reflection）** 见 **`15`**；**工具调用场景 Reward** 见 **`15` §6**。
 
 ---
 
@@ -95,10 +95,10 @@ L_SFT = - Σ_t log π_θ(y_t | x, y_<t)   （再对 batch 取平均）
 - log σ( β · ( (log π_θ(y_w|x) - log π_ref(y_w|x)) - (log π_θ(y_l|x) - log π_ref(y_l|x)) ) )
 ```
 
-括号内等于 **「胜者在隐式奖励上比负者高多少」**；`σ` 为 logistic。实现里常写 `**-log σ( ... )`**。其中：
+括号内等于 **「胜者在隐式奖励上比负者高多少」**；`σ` 为 logistic。实现里常写 **`-log σ( ... )`**。其中：
 
-- `**log π_θ(y_w) - log π_ref(y_w)**`（负者同理）：单条回答在 **相对参考** 下的「偏好势能」；两项相减才是 **成对** 可比量。  
-- `**β**`：放大/缩小该势能差；越大越 **听偏好**、但更易 **过拟合噪声 / 压离参考**；过小则几乎不动。
+- **`log π_θ(y_w) - log π_ref(y_w)`**（负者同理）：单条回答在 **相对参考** 下的「偏好势能」；两项相减才是 **成对** 可比量。  
+- **`β`**：放大/缩小该势能差；越大越 **听偏好**、但更易 **过拟合噪声 / 压离参考**；过小则几乎不动。
 
 **和 RLHF+PPO 的对比（面试必说清）**：
 
@@ -124,16 +124,72 @@ L_SFT = - Σ_t log π_θ(y_t | x, y_<t)   （再对 batch 取平均）
 
 **设定**：对同一 prompt `x` **一次采 G 条**完整回答 `{y_i}_{i=1..G}`，每条算标量回报 `R_i`（可来自执行单测、数学 verifier、格式分、RM 等）。
 
-**核心**：不主要依赖 **学出来的 `V(s)**`，而用 **组内统计量** 当 baseline，例如  
+**核心**：不主要依赖 **学出来的 `V(s)`**，而用 **组内统计量** 当 baseline，例如  
 `A_i = (R_i - mean({R})) / std({R})`（或只用减均值、或排名替代）。
 
-**策略梯度形态**：在 `π_θ` 上对 **整条 y_i** 的 log-prob（常 sum over tokens）乘 `A_i` 做上升步，并通常 **仍加 KL 到参考**，防止为刷分乱码。
+**策略梯度形态**：在 `π_θ` 上对 **整条 `y_i`** 的 log-prob（常 sum over tokens）乘 `A_i` 做上升步，并通常 **仍加 KL 到参考**，防止为刷分乱码。
 
-**和 PPO 关系**：PPO 用 **GAE + clip** 精细控 **逐步** credit；GRPO 用 **「同 prompt 多答案」互相当基线**，适合 **可自动验分** 的任务，**弱化 critic**。逐步公式与实现坑见 `**12**`。
+**和 PPO 关系**：PPO 用 **GAE + clip** 精细控 **逐步** credit；GRPO 用 **「同 prompt 多答案」互相当基线**，适合 **可自动验分** 的任务，**弱化 critic**。逐步公式与实现坑见 **`12` §5**。
 
 ### 面试怎么答
 
 「GRPO = 同 prompt 多样本 + 组内中心化/标准化回报当优势；省 critic、吃可验证奖励；和 PPO 比更粗粒度但在代码数学上好用。」
+
+---
+
+## 4.1 GSPO、DAPO、VAPO：相对 GRPO 优化什么（必考口径，公式见 12）
+
+下面按 **「和 GRPO 差在哪」** 记；**GSPO** 在长序列推理 RL 里近年面试权重高，建议与 **`12` §7～§8** 对照背诵。
+
+### GSPO（Group Sequence Policy Optimization）
+
+**问题从哪来**：GRPO/PPO 常在 **token 级** 算 importance ratio `r_t = π_θ/π_old`，长回答时 **每个 token 一个比率**，噪声沿序列 **累加**，训练方差大、长序列尤其不稳（Qwen 团队 GSPO 论文的核心动机之一）。
+
+**Group 采样**：与 GRPO 一样，对同一 prompt `x` 采 **一组（G 条）完整序列** `{y_i}`，用 **组内均值/方差** 做 baseline 降方差——**Group 结构保留**。
+
+**关键改动（相对 GRPO）**：把 **clip、reward、策略梯度上的 importance 权重** 收到 **序列级**——用整条序列似然的几何平均构造 **序列比率** `s_i(θ)`（等价于对 log-ratio 按长度归一），在 **序列粒度** 做 PPO 式 clip 与优化，避免 token 级比率在长链上 **方差爆炸**。
+
+**Group Size（G）对收敛**：
+
+- **G 太小**：组内 baseline 噪声大，优势估计抖，收敛慢或不稳。  
+- **G 适中增大**：组均值更稳，**方差降、收敛常更快**；但 **采样与 rollout 成本线性涨**。  
+- **G 过大**：边际收益递减，且若组内奖励全相同（全对/全错），**梯度几乎为 0**（DAPO 的 dynamic sampling 专门治这类无效组）。
+
+**相对 DPO 的优化点（别混成一类算法）**：
+
+| 维度 | DPO | GSPO（及 GRPO 系） |
+|------|-----|-------------------|
+| 数据 | 离线偏好对 `(x, y_w, y_l)` | **在线**从当前 `π_θ` 采样多条完整回答 |
+| 目标 | 隐式奖励的 **成对分类** loss | **策略梯度** + 可验证/模型奖励 |
+| 长序列 | 不直接处理 rollout 方差 | **序列级 ratio** 针对 **长输出 RL 方差** |
+| 适用 | 对齐偏好、省 rollout | 数学/代码等 **可打分** 推理强化 |
+
+面试一句：**「DPO 是离线偏好分类；GSPO 是在 GRPO 的组采样思路上，把 importance 从 token 收到 sequence，专治长链 RL 方差。」**
+
+### DAPO（Decoupled Clip and Dynamic sAmpling Policy Optimization）
+
+在 **GRPO 骨架** 上常见增强（阿里 / NeMo 等实现口径）：
+
+- **Clip-Higher**：`ε_low ≠ ε_high` 的非对称 clip，避免「好 token」过早被 clip 封顶。  
+- **Dynamic Sampling**：只保留 **组内奖励有方差** 的 prompt（如 `std(R_i)>0`），跳过 **全对/全错** 的无效组，提高有效梯度占比。  
+- **Token-Level Loss 权重**、**过长回答的 reward shaping**：缓解 **异长序列** 与截断噪声。
+
+相对 GRPO：**更稳、更少算力浪费在零梯度组**；工程调参项更多。
+
+### VAPO（Value-model-based Augmented PPO）
+
+走 **另一条路**：**不扔掉 value**，而是 **把 value 训准、用对**（Qwen 32B + AIME 等报告里常见叙事）。
+
+相对 **无 critic 的 GRPO/DAPO**，VAPO 强调：
+
+- **Value-Pretraining**、**Decoupled-GAE**、**Length-Adaptive GAE**：缓解 **价值网络偏差** 与 **长短序列混杂** 带来的优势估计失真。  
+- 仍可有 **Group Sampling**、**Clip-Higher**、**Token-Level PG** 等与 GRPO 系 **组件级重叠**，但 **优势来源** 常回到 **GAE + V**，而不是纯组内减均值。
+
+**怎么选（口述）**：要 **极简、可验证奖励、少维护 critic** → GRPO/DAPO/GSPO 一脉；要 **复杂推理、愿训 value、追求样本效率与稳定性** → 看 VAPO 类 **value-augmented** 方案。
+
+### 面试怎么答（变体总括）
+
+「GRPO 用组内 baseline 省 critic；DAPO 加动态采样和非对称 clip 提效；GSPO 把 importance 收到序列级降长链方差；VAPO 反过来加强 value/GAE。DPO 是离线偏好，和它们在线 RL 不是一条线。」
 
 ---
 
@@ -195,6 +251,25 @@ lr=2e-4, warmup_ratio=0.03, weight_decay=0.0~0.1（按任务扫）
 - 训练集很好、验证差：减 `r`/增 dropout/早停/加通用混合数据。  
 - 输出风格跑偏或遗忘：降 lr、加 KL 到参考、缩小可训练模块范围。
 
+### 6.2 LoRA、QLoRA、LoRA+、DoRA：各解决什么问题
+
+四者都是 **PEFT**：冻结（或部分冻结）预训练权重，只训少量增量参数，降低 **显存与优化器状态** 压力。差别在 **「省下来的显存从哪来」** 以及 **「更新方式是否更贴近全参微调」**。
+
+| 方法 | 核心做法 | 主要解决什么问题 |
+|------|----------|------------------|
+| **LoRA** | `ΔW = B A`，低秩适配，只训 A/B | **全参微调太贵**；在较小 rank 下接近全参效果 |
+| **QLoRA** | LoRA + **4bit 量化** 存基础权重，计算时常用 NF4 + 双重量化；LoRA 适配器仍 FP16/BF16 | **单卡装不下大模型权重**；在 **消费级 GPU** 上训 7B～70B |
+| **LoRA+** | 对 LoRA 的 **A 与 B 使用不同学习率**（常 `η_B > η_A`，如 B 用更大 lr 或固定比例） | 标准 LoRA **A、B 同 lr** 与 **非对称初始化**（A 随机、B 初值为 0）不匹配，收敛慢、略欠拟合；LoRA+ 报告 **更快收敛、略提精度**，**不增加推理开销** |
+| **DoRA** | 把权重分解为 **幅度（magnitude）+ 方向（direction）**；**方向** 用 LoRA 更新，**幅度** 单独可训 | LoRA 与全参微调差距 partly 来自 **只改方向、幅度学不好**；DoRA 更好拟合全参的 **幅值-方向** 更新模式，**精度常优于 LoRA**，推理时可合并 **无额外延迟** |
+
+**QLoRA 与 LoRA 关系**：QLoRA **不是**另一种低秩结构，而是 **「量化底座 + LoRA 适配器」** 的训练配方。底座用 4bit 省显存；**梯度仍主要更新 LoRA 参数**（及可选的 norm 等）。面试别答成「QLoRA 秩更低」。
+
+**LoRA+ 直觉**：B 矩阵负责把低秩特征 **映射回原空间**，对最终更新幅度影响大；给 B **更大学习率** 相当于承认「A 压缩、B 放大」两步 **灵敏度不同**。
+
+**DoRA 直觉**：全参更新往往 **方向变一点、模长也变一点**；纯 LoRA 主要在 **方向子空间** 里动，DoRA 显式补 **模长通道**，缓解 **LoRA 追不上全参** 的那一段 gap。
+
+**选型口述**：单卡要训大模型 → **QLoRA**；同卡要更快/更稳收敛 → 试 **LoRA+**；同 rank 要更高精度、愿多一点可训参数 → **DoRA**；资源够、任务极难 → 再考虑全参或更大 rank。
+
 ---
 
 ## 7. 灾难性遗忘
@@ -213,6 +288,8 @@ lr=2e-4, warmup_ratio=0.03, weight_decay=0.0~0.1（按任务扫）
 
 - SFT = **TF 下的逐步 CE**；与推理 **分布错位** → exposure bias。  
 - RLHF = **RM（成对偏好）+ PPO（KL 约束）**；DPO = **(y_w,y_l)+π_ref 的成对 sigmoid loss**，**离线**、无 value。  
-- GRPO = **组内相对回报当优势**，接 `**12`** 展开。  
+- GRPO = **组内相对回报当优势**，接 **`12` §5** 展开。  
+- **GSPO** = 组采样保留 + **序列级 importance** 降长链方差；**DAPO/VAPO** = 在 GRPO/PPO 上的 **采样/clip/value** 增强。  
+- **LoRA / QLoRA / LoRA+ / DoRA** = 省参数量级不同（量化 vs 学习率分解 vs 幅值-方向）。  
 - RLAIF = **偏好数据来源**；**loss 仍是 RM/PPO/DPO 家族**。
 

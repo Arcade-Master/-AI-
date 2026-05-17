@@ -1,6 +1,6 @@
 # 面试笔记
 
-正文 Markdown 在 [`面试笔记/`](./面试笔记/) 目录。下面为 **阅读顺序** 与 **文件索引**（GitHub 打开本仓库首页即可从这里点进各篇）。
+正文 Markdown 在 [`面试笔记/`](./面试笔记/) 目录；**手撕代码题** 单独放在 [`手撕代码/`](./手撕代码/)（与笔记分离，便于贴题与维护实现）。下面为 **阅读顺序** 与 **文件索引**（GitHub 打开本仓库首页即可从这里点进各篇）。
 
 本套笔记按 **「先基础、后系统」** 拆开，避免读到后面才发现前面某节本该先读。公式仍用纯文本（`Σ`、`sqrt`），不依赖 LaTeX。
 
@@ -16,7 +16,7 @@
 6. **`06`**：MoE 与 MLA 放前，**R1/冷启动** 放后（R1 常依赖「为何用 MoE、如何省 KV」的直觉）。
 7. **`07`**：位置编码、长文、量化、评测。
 8. **`08` / `14`**：推理侧 prefill/decode、vLLM、SGLang、JSON、asyncio。
-9. **`09` / `13` / `15`**：Prompt、RAG、Agent —— 产品向，可独立阅读。
+9. **`09` / `13` / `15`**：`09` 含 LangChain/LangGraph/Harness 长笔记 + Prompt/幻觉；`13` RAG；`15` Agent —— 可独立阅读。
 
 ---
 
@@ -32,7 +32,7 @@
 | [06](./面试笔记/06-DeepSeek-R1-MLA与MoE.md) | MoE、MLA、R1、冷启动 |
 | [07](./面试笔记/07-长上下文位置编码与量化评测.md) | RoPE、外推、量化、评测 |
 | [08](./面试笔记/08-推理部署Prefill与vLLM.md) | Prefill/Decode、vLLM、PagedAttention |
-| [09](./面试笔记/09-Prompt工程数据与幻觉.md) | Prompt、数据、幻觉 |
+| [09](./面试笔记/09-Prompt工程数据与幻觉.md) | LangChain/LangGraph/Harness + Prompt、数据、幻觉（整合篇） |
 | [10](./面试笔记/10-工程排障与分布式实战.md) | NCCL、OOM、死锁、利用率 |
 | [11](./面试笔记/11-多模态对齐QFormer-ViT与RoPE.md) | 对齐层、Q-Former、ViT 训练、RoPE、PPL |
 | [12](./面试笔记/12-RL进阶REINFORCE-PPO-GRPO与价值函数.md) | REINFORCE、**GAE**、**PPO clip 目标**、**GRPO 组内优势与 loss**、Value |
