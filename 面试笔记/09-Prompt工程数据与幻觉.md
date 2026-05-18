@@ -16,7 +16,7 @@ LangChain（LLM 应用组件库 / Chain 流水线）
 |----------|--------|
 | 框架、Runtime、Harness | `15` Agent、Tool、上下文 |
 | Prompt、数据、幻觉 | `13` RAG、`05` DPO/RLAIF |
-| 约束解码 | `14`（若有） |
+| 约束解码、强制 JSON | `15` §5.1 |
 
 ---
 
@@ -453,7 +453,7 @@ planner → executor → verifier
 **缓解（系统向，不单靠 prompt）**：
 
 - **RAG + 引用链**：生成前注入 chunk；生成后 **span–chunk 重叠**、**引用 id 是否存在**；失败则拒答或重检索（见 `13`）。  
-- **约束解码**：必须 JSON / 必须 citation 字段时用 **grammar**（见 `14`）。  
+- **约束解码**：必须 JSON / 必须 citation 字段时用 **grammar**（四层手段见 **`15` §5.1**）。  
 - **偏好对齐**：事实性/有据性维度做人标或 RLAIF，走 DPO/RLHF（见 `05`）——标注维度是「是否胡编」，loss 仍是成对或 RM+PPO。  
 - **工具闭环**：算术、查库、实时状态 **必须走执行器**；reward 可对执行结果二值化，与 GRPO 友好。
 

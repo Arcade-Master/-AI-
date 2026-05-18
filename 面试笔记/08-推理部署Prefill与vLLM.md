@@ -43,11 +43,21 @@
 
 ---
 
-## 3. 和 FlashAttention 的关系
+## 3. 和 FlashAttention 的关系（两层别混）
 
-**FlashAttention**：算子层 **少写 HBM、分块 softmax**（见 `04`）。  
-**vLLM**：调度层 **KV 存哪、batch 怎么拼**。  
-二者 **叠在一起** 很常见。
+推理优化分 **两层**，面试别合成「一个魔法加速包」：
+
+| 层级 | 代表 | 解决什么 | 不解决什么 |
+|------|------|----------|------------|
+| **算子 / 内核** | FlashAttention、FlashDecoding | 单次 attention **少读写 HBM**、分块算 softmax | 多用户 **KV 放哪、batch 怎么拼** |
+| **服务 / 调度** | vLLM PagedAttention、continuous batching | **KV 分页、动态插拔请求、提高吞吐** | 注意力 **数学公式** 不变 |
+
+**叠用**：vLLM 调度 batch 时，底层 forward 仍可调 **FlashAttention 实现的 kernel**（依框架版本）。  
+**记忆口诀**：Flash 改 **怎么算一层 attention**；vLLM 改 **很多条请求的 KV 怎么存、怎么一起算**。
+
+### 面试怎么答
+
+「Flash 是算子省 HBM；vLLM 是服务层 KV 分页和 continuous batching；常一起用，分工不同。」
 
 ---
 

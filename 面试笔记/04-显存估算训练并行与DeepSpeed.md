@@ -130,11 +130,33 @@
 | ZeRO-3 | + 参数   | 单卡常驻最少，但 **通信最多** |
 
 
-**FSDP**：PyTorch 原生 **分片 DDP**，思想接近 ZeRO，生态集成好；**DeepSpeed** 更像「训练框架 + 一堆开关（ZeRO、offload、pipeline…）」。
+**FSDP**：PyTorch 原生 **分片 DDP**，思想接近 ZeRO，生态集成好。
+
+### 7.1 DeepSpeed 是什么？和 DDP 什么关系（别混成二选一）
+
+**DeepSpeed**（微软）是建在 **PyTorch 之上** 的 **分布式训练库/引擎**，不是替代 PyTorch 的新语言。它提供：
+
+- **ZeRO-1/2/3**（优化器/梯度/参数分片，§7 表）；  
+- **Optimizer / Parameter Offload** 到 CPU/NVMe；  
+- **Pipeline 并行**、**混合精度**、**梯度累积** 等 **配置化开关**；  
+- 与 **HuggingFace Trainer、Accelerate、Megatron** 等 **集成**（`deepspeed.json` 或 `TrainingArguments`）。
+
+**DDP 是什么**：PyTorch 自带的 **数据并行** 原语——每卡 **一份完整模型**，梯度 **all-reduce 平均**（§4）。
+
+**二者关系（面试关键）**：
+
+| 问题 | 答案 |
+|------|------|
+| DeepSpeed 取代 DDP 吗？ | **不取代「数据并行」思想**；常用 **DeepSpeed ZeRO + 多卡各算不同 batch** = **仍是数据并行**，只是 **参数/优化器不再每卡全存** |
+| 和「裸 DDP」差在哪？ | **裸 DDP**：每卡 **全量权重+全量 Adam 状态** → 易 OOM。**DeepSpeed ZeRO-3**：参数也分片，**前向/反向时 all-gather 临时拼层** → **省显存、多通信** |
+| 和 FSDP 呢？ | **目标类似**（ZeRO 系分片）；FSDP 是 **PyTorch 原生** API，DeepSpeed 是 **独立生态、配置项更多**（offload、pipeline 等）。选型常看 **框架习惯与集群支持** |
+| 能否和 TP/PP 一起？ | 可以：**Megatron 管 TP/PP，DeepSpeed 管 ZeRO/Offload** 的组合在大模型训练里常见（具体拓扑见 §8） |
+
+**一句话**：**DDP = 多卡并行算、梯度对齐的一种模式**；**DeepSpeed = 实现该模式时，用 ZeRO/offload 等 **省显存、扩规模** 的工具箱**。说「用 DeepSpeed 就不用 DDP」不准确——通常是 **用 DeepSpeed 引擎跑 **带 ZeRO 的数据并行****。
 
 ### 面试怎么答
 
-「ZeRO 是用通信换显存；越激进越慢；激活不见得随 ZeRO 变少。」
+「DeepSpeed 是 PyTorch 上的分布式训练库，核心是 ZeRO 分片省显存；和 DDP 不是对立，常是 DeepSpeed 实现的数据并行+分片；和 FSDP 目标接近、API 不同。」
 
 ---
 
