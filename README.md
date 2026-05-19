@@ -28,14 +28,14 @@
 | [02](./面试笔记/02-注意力Transformer与Mask.md) | Attention、mask、KV、**Prefill/Decode 分阶段**、与 RNN 对比、复杂度、**单头+多头手撕** |
 | [03](./面试笔记/03-优化器浮点与数值稳定.md) | Adam/AdamW、BF16/FP16、溢出、loss scaling |
 | [04](./面试笔记/04-显存估算训练并行与DeepSpeed.md) | 显存粗算、DDP/TP/PP/SP、ZeRO、**DeepSpeed 与 DDP 关系**、Megatron、Flash |
-| [05](./面试笔记/05-微调SFT对齐RL与遗忘.md) | SFT、RLHF/DPO/GRPO、**SFT→RL 切换与 checkpoint**、**奖励形态/LLM 打分**、**8B vs 30B 选型**、LoRA、遗忘 |
+| [05](./面试笔记/05-微调SFT对齐RL与遗忘.md) | SFT、RLHF/DPO/GRPO/GSPO（含公式、GAE/PPO clip、Value、变体）、**SFT→RL 切换**、**奖励形态/LLM Judge**、**模型选型**、LoRA、遗忘 |
 | [06](./面试笔记/06-DeepSeek-R1-MLA与MoE.md) | MoE、MLA、R1、冷启动 |
 | [07](./面试笔记/07-长上下文位置编码与量化评测.md) | RoPE、外推、量化、评测 |
 | [08](./面试笔记/08-推理部署Prefill与vLLM.md) | Prefill/Decode、vLLM、PagedAttention |
 | [09](./面试笔记/09-Prompt工程数据与幻觉.md) | LangChain/LangGraph/Harness + Prompt、数据、幻觉（整合篇） |
 | [10](./面试笔记/10-工程排障与分布式实战.md) | NCCL、OOM、死锁、利用率、**AutoResearch 流程** |
 | [11](./面试笔记/11-多模态对齐QFormer-ViT与RoPE.md) | 对齐层、Q-Former、ViT 训练、RoPE、PPL |
-| [12](./面试笔记/12-RL进阶REINFORCE-PPO-GRPO与价值函数.md) | REINFORCE、**GAE**、**PPO clip 目标**、**GRPO 组内优势与 loss**、Value |
+| （已并入 05） | REINFORCE/GAE/PPO/GRPO 公式与变体见 05 |
 | [13](./面试笔记/13-RAG向量化检索与Agent系统设计.md) | PDF、检索、HyDE、记忆、RAG 三问题 |
 | [15](./面试笔记/15-Agent架构上下文与工具调用.md) | Agent 上下文、架构、Tool、**强制 JSON** |
 
