@@ -1,126 +1,121 @@
 # 07｜XOR 最佳搭档计数
 
 **标签**：位运算 / 数位 DP / 困难  
-**来源**：代码题截图 `已处理/07-XOR最佳搭档-题面.png`（阿里 2026）  
+**来源**：阿里 2026  
 **状态**：可背
 
 ---
 
 ## 题面
 
-给定 x 与 a 的区间 [la, ra]、b 的区间 [lb, rb]。
+x，a∈[la,ra]，b∈[lb,rb]。求有多少对 (a,b) 使 `x XOR a XOR b` 等于**所有合法对里的最大值**。
 
-**最佳搭档**：在所有 (a,b) 合法对中，使 `x XOR a XOR b` 达到**最大值**的那些对。
-
-求最佳搭档的对数。
-
-**输入**：多测 T；每组 x, la ra, lb rb。范围 < 2^31。  
-**样例**：x=0, a∈[1,2], b∈[0,2] → 最大异或 3，有 (1,2)(2,1) 共 2 对。
+样例：x=0, a∈[1,2], b∈[0,2] → 最大 3，(1,2)(2,1) 共 2 对。
 
 ---
 
-## 思路
+## 算法（两步）
 
-**全文脉络**：
+1. **M 事先不知道**，从高位到低位试：这一位能不能是 1？能就 `M |= 1<<b`。
+2. M 定死后，数位 DP **数**有多少 (a,b) 使 `x^a^b == M`。
 
-```
-1. 从高到低试每一位，贪心求最大异或值 M（数位 DP 判「能否达到」）
-2. 再数位 DP 数有多少 (a,b) 满足 x^a^b 的每一位都等于 M
-```
-
-### 1. 贪心求 M
-
-从高位 bit=30 到 0：若存在合法 (a,b) 使 `x^a^b` 在已固定位之上与 `M|(1<<b)` 一致，且当前位能为 1，则 `M |= 1<<b`。
-
-「是否存在」用 DP：`feasible(pos, 四维 tight, trial, min_pos)`，只约束 pos >= min_pos 的位必须等于 trial 的该位。
-
-### 2. 计数
-
-M 固定后，同样从高到低 DP，要求每一位 `((x>>pos)&1) ^ ab ^ bb == (M>>pos)&1`，累加方案数。
-
-### 3. 区间 tight 写法（易错）
-
-不要用 `range(lo, hi+1)` 当 la 位 > ra 位时为空；应对 ab∈{0,1} 逐个判断：
-
-```python
-if tla and ab < ((la >> pos) & 1): continue
-if tra and ab > ((ra >> pos) & 1): continue
-```
-
-**复杂度**：O(log V) 位 * 16 状态，每组 O(31*16) 常数小。
+样例：试 bit1 能要 1 → M=2；试 bit0 能要 1 → M=3；再数等于 3 的对数 → 2。
 
 ---
 
 ## 参考实现
+
+（x、la、ra、lb、rb 都是**普通十进制整数**；DP 里用 `>> pos` 取其二进制第 pos 位。）
 
 ```python
 from functools import lru_cache
 
 
 def solve_xor(x: int, la: int, ra: int, lb: int, rb: int) -> int:
-    @lru_cache(None)
-    def feasible(pos, tla, tra, tlb, trb, trial, min_pos):
+    # x, la, ra, lb, rb：题面给的十进制整数，例如 la=1, ra=2 表示 a 只能取 1 或 2
+    TOP = 30  # 值 < 2^31，最高位下标 30
+
+    def bit_at(num: int, pos: int) -> int:
+        # 十进制 num 写成二进制后，第 pos 位是 0 还是 1（pos=0 是最低位）
+        return (num >> pos) & 1
+
+    def try_digit(d: int, lo: int, hi: int, pin_lo: bool, pin_hi: bool, pos: int):
+        """
+        正在构造一个十进制数，当前填它的第 pos 位二进制 d（0 或 1）。
+        lo, hi：十进制下界、上界（如 a 的 la, ra）。
+        pin_lo：True = 已填的高位和 lo 完全一样，这一位不能比 lo 该位更小。
+        pin_hi：True = 已填的高位和 hi 完全一样，这一位不能比 hi 该位更大。
+        返回 (能否选 d, 选完后的 pin_lo, 选完后的 pin_hi)。
+        """
+        if pin_lo and d < bit_at(lo, pos):
+            return False, pin_lo, pin_hi
+        if pin_hi and d > bit_at(hi, pos):
+            return False, pin_lo, pin_hi
+        # 这一位比 lo 大 → 后面不可能再小于 lo，pin_lo 解除
+        new_pin_lo = pin_lo and (d == bit_at(lo, pos))
+        # 这一位比 hi 小 → 后面不可能再大于 hi，pin_hi 解除
+        new_pin_hi = pin_hi and (d == bit_at(hi, pos))
+        return True, new_pin_lo, new_pin_hi
+
+    @lru_cache(None)  # 记忆化：相同 (pos, 四个 pin, need, from_pos) 只算一次
+    def exists(pos, pin_lo_a, pin_hi_a, pin_lo_b, pin_hi_b, need, from_pos):
+        """
+        从第 pos 位往下填 a、b，是否存在合法对使：
+        x^a^b 在 bit[from_pos..TOP] 上与十进制 need 的二进制一致。
+        低于 from_pos 的位暂不约束（贪心还没试到）。
+        """
         if pos < 0:
             return True
-        for ab in (0, 1):
-            if tla and ab < ((la >> pos) & 1):
+        for da in (0, 1):  # a 在当前位的二进制
+            ok, pla, pha = try_digit(da, la, ra, pin_lo_a, pin_hi_a, pos)
+            if not ok:
                 continue
-            if tra and ab > ((ra >> pos) & 1):
-                continue
-            ntla = tla and ab == ((la >> pos) & 1)
-            ntra = tra and ab == ((ra >> pos) & 1)
-            for bb in (0, 1):
-                if tlb and bb < ((lb >> pos) & 1):
+            for db in (0, 1):  # b 在当前位的二进制
+                ok, plb, phb = try_digit(db, lb, rb, pin_lo_b, pin_hi_b, pos)
+                if not ok:
                     continue
-                if trb and bb > ((rb >> pos) & 1):
+                xor_bit = bit_at(x, pos) ^ da ^ db  # x^a^b 在这一位
+                if pos >= from_pos and xor_bit != bit_at(need, pos):
                     continue
-                ntlb = tlb and bb == ((lb >> pos) & 1)
-                ntrb = trb and bb == ((rb >> pos) & 1)
-                r = ((x >> pos) & 1) ^ ab ^ bb
-                if pos >= min_pos and r != ((trial >> pos) & 1):
-                    continue
-                if feasible(pos - 1, ntla, ntra, ntlb, ntrb, trial, min_pos):
+                if exists(pos - 1, pla, pha, plb, phb, need, from_pos):
                     return True
         return False
 
+    # ① 求最大异或值 M（十进制），事先不知道，一位位试
     M = 0
-    for b in range(30, -1, -1):
-        if feasible(30, True, True, True, True, M | (1 << b), b):
-            M |= 1 << b
+    for b in range(TOP, -1, -1):
+        trial = M | (1 << b)  # 试探：第 b 位能否为 1
+        if exists(TOP, True, True, True, True, trial, b):
+            M = trial  # 可以 → 把 M 的第 b 位钉成 1
 
     @lru_cache(None)
-    def count(pos, tla, tra, tlb, trb):
+    def count(pos, pin_lo_a, pin_hi_a, pin_lo_b, pin_hi_b):
+        """M 已固定，数有多少对 (a,b) 使十进制 x^a^b == M（每一位都要对上）"""
         if pos < 0:
             return 1
         res = 0
-        for ab in (0, 1):
-            if tla and ab < ((la >> pos) & 1):
+        for da in (0, 1):
+            ok, pla, pha = try_digit(da, la, ra, pin_lo_a, pin_hi_a, pos)
+            if not ok:
                 continue
-            if tra and ab > ((ra >> pos) & 1):
-                continue
-            ntla = tla and ab == ((la >> pos) & 1)
-            ntra = tra and ab == ((ra >> pos) & 1)
-            for bb in (0, 1):
-                if tlb and bb < ((lb >> pos) & 1):
+            for db in (0, 1):
+                ok, plb, phb = try_digit(db, lb, rb, pin_lo_b, pin_hi_b, pos)
+                if not ok:
                     continue
-                if trb and bb > ((rb >> pos) & 1):
+                if bit_at(x, pos) ^ da ^ db != bit_at(M, pos):
                     continue
-                ntlb = tlb and bb == ((lb >> pos) & 1)
-                ntrb = trb and bb == ((rb >> pos) & 1)
-                if (((x >> pos) & 1) ^ ab ^ bb) != ((M >> pos) & 1):
-                    continue
-                res += count(pos - 1, ntla, ntra, ntlb, ntrb)
+                res += count(pos - 1, pla, pha, plb, phb)
         return res
 
-    return count(30, True, True, True, True)
+    return count(TOP, True, True, True, True)
 
 
 def main() -> None:
     t = int(input())
     for _ in range(t):
         x = int(input())
-        la, ra = map(int, input().split())
-        lb, rb = map(int, input().split())
+        la, ra = map(int, input().split())  # 十进制区间 [la, ra]
+        lb, rb = map(int, input().split())  # 十进制区间 [lb, rb]
         print(solve_xor(x, la, ra, lb, rb))
 
 
@@ -130,6 +125,6 @@ if __name__ == "__main__":
 
 ---
 
-## 面试怎么答（30 秒）
+## 面试 20 秒
 
-「先按位贪心求最大 x^a^b，再用四维 tight 的数位 DP 计数达到最大值的 (a,b) 对数。区间判断用 0/1 枚举+tight 剪枝，别用错误的 lo-hi 区间。」
+「M 高位到低位贪心试 1；每位用 exists 判有没有 (a,b)。M 定后 count 数位 DP 数对数。pin_lo/pin_hi 表示前缀是否贴区间边界，贴就要满足该位不能越界。」
