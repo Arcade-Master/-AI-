@@ -1,6 +1,6 @@
-# 11｜多模态对齐：对齐层、Q-Former、ViT 训练、RoPE、PPL 手撕
+# 11｜多模态对齐：对齐层、Q-Former、ViT 训练、RoPE
 
-**建议阅读顺序（本篇内部）**：先弄清 **「对齐」到底对齐哪两件事（维度 + 语义）** → **Q-Former 在接口里占什么位置** → **其它对齐变体对照** → **像素到 LLM 的张量流** → **1D/2D RoPE** → **多阶段训练与学习率** → 最后 **PPL 与 mask 手撕**（依赖你已会 **交叉熵与 mask**，见 `01`）。
+**建议阅读顺序（本篇内部）**：先弄清 **「对齐」到底对齐哪两件事（维度 + 语义）** → **Q-Former 在接口里占什么位置** → **其它对齐变体对照** → **像素到 LLM 的张量流** → **1D/2D RoPE** → **多阶段训练与学习率** → **PPL 与 mask 常见错**（实现见 [`手撕代码/AI手撕/03-手撕PPL.md`](../手撕代码/AI手撕/03-手撕PPL.md)）。
 
 ---
 
@@ -106,26 +106,15 @@
 
 ---
 
-## 7. PPL 手撕与 mask 常见错
+## 7. PPL 与 mask 常见错
 
-**定义**：对参与训练的 token 求平均 **NLL**，再 `exp`。
+**定义**：对参与训练/评测的 **有效 token** 求平均 **NLL**，再 `exp`。多模态 SFT 里 **图像 token、instruction 段** 常在 `labels` 里标 `-100`，与纯文本 LM 同一套 mask 逻辑。
 
-**分母必须是 mask.sum()**：`ignore_index` 位置 loss 常为 0，但若你用 `B*T` 平均会把 **padding 当有效样本** → **PPL 假低**。
+**分母必须是 mask.sum()**：`ignore_index` 位置 loss 常为 0，但若用 `B*T` 平均会把 **padding 当有效样本** → **PPL 假低**。
 
 **其它坑**：label 与 logits **错位**；instruction 段训练不算却评测算；pad id 与 ignore_index 不一致。
 
-```python
-import torch, torch.nn.functional as F
-
-def perplexity(logits, labels, ignore_index=-100):
-    flat_logits = logits.reshape(-1, logits.size(-1))
-    flat_labels = labels.reshape(-1)
-    mask = flat_labels != ignore_index
-    if not mask.any():
-        return float("nan")
-    nll = F.cross_entropy(flat_logits, flat_labels, reduction="none", ignore_index=ignore_index)
-    return torch.exp(nll.sum() / mask.float().sum()).item()
-```
+**手撕实现**：[`手撕代码/AI手撕/03-手撕PPL.md`](../手撕代码/AI手撕/03-手撕PPL.md)
 
 ### 面试怎么答
 

@@ -1,6 +1,6 @@
 # 02｜注意力、Transformer、Mask 与 KV Cache
 
-**建议阅读顺序（本篇内部）**：**Q/K/V 含义** → **注意力公式与输出形状** → **为什么要除以 sqrt(d_k)** → **softmax 干什么** → **为何拆三个矩阵** → **多头（含 W_O 与 FFN 衔接）** → **时间/空间复杂度**（建立「为何长文贵」）→ **mask**（为何能/不能看某些位置）→ **Prefill 与 Decode**（提示阶段 vs 解码阶段）→ **KV Cache** → **和 RNN 类模型对比** → **单头 / 多头 NumPy 手撕（§12～§13）**。
+**建议阅读顺序（本篇内部）**：**Q/K/V 含义** → **注意力公式与输出形状** → **为什么要除以 sqrt(d_k)** → **softmax 干什么** → **为何拆三个矩阵** → **多头（含 W_O 与 FFN 衔接）** → **时间/空间复杂度**（建立「为何长文贵」）→ **mask**（为何能/不能看某些位置）→ **Prefill 与 Decode**（提示阶段 vs 解码阶段）→ **KV Cache** → **和 RNN 类模型对比** → **单头 / 多头 NumPy 手撕**（见 [`手撕代码/AI手撕/02-手撕多头注意力.md`](../手撕代码/AI手撕/02-手撕多头注意力.md)）。
 
 术语：下文 **compute-bound** 写作「**算力受限**」（算子大、GPU 算得满）；**memory-bound / bandwidth-bound** 写作「**显存带宽受限**」（算子小、卡在读写显存）。
 
@@ -180,82 +180,13 @@ MHA(X) = Concat(head_1, ..., head_h) W_O
 
 ---
 
-## 12. 单头注意力参考实现（NumPy）
+## 12. 单头 / 多头手撕（NumPy）
 
-```python
-import numpy as np
+形状约定：`X` 为 **`(B, L, d_model)`**，`n_heads` 整除 `d_model`，**`d_k = d_model // n_heads`**；`Wq/Wk/Wv/Wo` 均为 **`(d_model, d_model)`**（与大矩阵一次乘再切头等价）。
 
-def attention(Q, K, V, causal=False, eps=1e-9):
-    d = Q.shape[-1]
-    scores = (Q @ K.T) / np.sqrt(d)
-    if causal:
-        L = scores.shape[0]
-        mask = np.triu(np.ones((L, L), dtype=bool), k=1)
-        scores = np.where(mask, -1e9, scores)
-    scores = scores - scores.max(axis=-1, keepdims=True)
-    w = np.exp(scores)
-    w /= w.sum(axis=-1, keepdims=True) + eps
-    return w @ V, w
-```
+**要点**：`split_heads` / `transpose` 只是在换维，注意力仍在最后两维做 `Lq×Lk` 与 `Lk×dk`；多批、多头时 **B、H 是广播维**。
 
----
-
-## 13. 多头注意力手撕（NumPy）
-
-约定：`X` 形状 **`(B, L, d_model)`**，`n_heads` 整除 `d_model`，**`d_k = d_model // n_heads`**。`Wq, Wk, Wv` 均为 **`(d_model, d_model)`**（与「每头各一块小矩阵」等价，只是拼成大矩阵乘一次再切头）。`Wo` **`(d_model, d_model)`**。
-
-```python
-import numpy as np
-
-
-def softmax_lastdim(x, eps=1e-9):
-    x = x - np.max(x, axis=-1, keepdims=True)
-    e = np.exp(x)
-    return e / (np.sum(e, axis=-1, keepdims=True) + eps)
-
-
-def scaled_dot_product_attention(q, k, v, causal=False):
-    """q, k, v: (B, H, Lq, dk), (B, H, Lk, dk), (B, H, Lk, dk) -> (B, H, Lq, dk)"""
-    dk = q.shape[-1]
-    scores = np.matmul(q, np.swapaxes(k, -2, -1)) / np.sqrt(dk)  # (B,H,Lq,Lk)
-    if causal:
-        Lq, Lk = scores.shape[-2], scores.shape[-1]
-        assert Lq == Lk, "causal self-attn expects Lq == Lk"
-        mask = np.triu(np.ones((Lq, Lk), dtype=bool), k=1)
-        scores = np.where(mask, -1e9, scores)
-    attn = softmax_lastdim(scores)
-    return np.matmul(attn, v), attn
-
-
-def multi_head_attention(x, wq, wk, wv, wo, n_heads, causal=False):
-    """
-    x: (B, L, d)
-    wq, wk, wv, wo: (d, d), d == n_heads * d_k
-    return: (B, L, d)
-    """
-    b, l, d = x.shape
-    assert d % n_heads == 0
-    dk = d // n_heads
-
-    def proj(t, w):
-        return np.matmul(t, w)  # (B, L, d)
-
-    # (B, L, d) -> (B, L, H, dk) -> (B, H, L, dk)
-    def split_heads(t):
-        t = t.reshape(b, l, n_heads, dk)
-        return np.transpose(t, (0, 2, 1, 3))
-
-    q = split_heads(proj(x, wq))
-    k = split_heads(proj(x, wk))
-    v = split_heads(proj(x, wv))
-
-    out, _ = scaled_dot_product_attention(q, k, v, causal=causal)  # (B,H,L,dk)
-    # merge heads: (B,H,L,dk) -> (B,L,d)
-    out = np.transpose(out, (0, 2, 1, 3)).reshape(b, l, d)
-    return np.matmul(out, wo)
-```
-
-**要点**：`split_heads` / `transpose` 只是在换维，**注意力仍是在最后两维上做 `Lq×Lk` 与 `Lk×dk`**；多批、多头时 **最外两维 B、H 是广播维**。
+**完整实现（单头 scaled dot-product、因果 mask、MHA）**：[`手撕代码/AI手撕/02-手撕多头注意力.md`](../手撕代码/AI手撕/02-手撕多头注意力.md)
 
 ---
 
