@@ -1,7 +1,7 @@
 # 05｜SFT、偏好对齐（RLHF/DPO/GRPO）、PEFT、遗忘、RLAIF
 
-**建议阅读顺序（本篇内部）**：**SFT** → **teacher forcing** → **LoRA 系** → **RLHF / DPO / GRPO / GSPO（含公式与变体）** → **RLAIF** → **SFT→RL 切换与 checkpoint** → **奖励形态与 LLM 打分** → **模型规模选型** → **遗忘**。  
-**Agent 推理模式** 见 `**15`**；工具 Reward 见 `**15` §6**；**DeepSpeed 与 DDP** 见 `**04` §7.1**；**AutoResearch** 见 `**10` §6**。
+**RL 工程细节**（GAE、稀疏 reward、异步 Judge、动态采样、buffer）：见 **`05-1`**。  
+**Agent** 见 `15`；**工具 Reward** 见 `15` §6；**DeepSpeed/DDP** 见 `04` §7.1。
 
 ---
 
@@ -52,22 +52,15 @@ L_SFT = - Σ_t log π_θ(y_t | x, y_<t)   （再对 batch 取平均）
 
 **和 SFT 的本质差别**：SFT 是 **「给定人类写的一条 y，拉高它的 log p」**；RLHF 是 **「在整个生成空间里，按 RM 的期望回报选轨迹」**，允许 **探索**、**多步 credit**、以及 **对 RM 定义的细粒度行为**（如有帮助、更诚实）优化，但 **工程重、方差大、要防 reward hacking**。
 
-### 2.1 RM 打分、Value 模型训练与 GAE（PPO 里的 critic 部分）
+### 2.1 PPO 需要 critic 时：RM、稀疏 reward、GAE（梗概）
 
-**RM（奖励模型）打分对象**：在经典 RLHF 里，RM 是在**同一 prompt 下的一整条生成 y** 上打一个标量分（`r(x, y)`），而不是对每一步 token 打分。训练 RM 用的是成对偏好 `(y_w, y_l)`，目标是让 RM 给胜者更高分。实际 RL 阶段，reward 通常是**稀疏**的（生成结束时才给一次分），不是每一步都有。想做「过程奖励」（每一步或每几步打分）需要专门的 Process Reward Model (PRM)，不是默认的 RM。
+**RM**：对 **整条回答 y** 打一个标量分，不是默认 per-token；过程分要用 **PRM**。RL 里常见 **只在结束时给一次 reward**，前面步 `r_t=0`。
 
-**Value 模型（Critic）训练**：Value 模型的目标是预测「从当前状态 s_t 出发，按当前策略继续生成，预期能拿到多少总回报」。
+**PPO 多一块 Value**：用 `V(s)` 估 baseline，**GAE** 从 TD 误差叠出优势 `A`，乘进 clip loss；Value 自身用 **`(V(s_t)-G_t)²`** 回归，label `G_t` 是轨迹上的累积回报。稀疏 reward 时结束步设 **`V(s_{T+1})=0`**，靠 GAE 把终局分往前传。
 
-1. **工程复杂度高**：要同时训 policy + value（critic），还要调 `clip`、value loss 权重、KL、熵系数、reward whitening 等，系统耦合重。
-2. **value 学偏会误导策略**：LLM 场景奖励稀疏、长序列 credit 难，`V` 估错会把 `A_t` 带偏，训练不稳。
-3. **离线偏好方法替代**：DPO/IPO/KTO 这类直接用偏好对优化，不需要在线 rollout + critic + GAE。
-4. **可验证任务里有更简单基线**：如 GRPO 用同 prompt 多样本的组内统计做优势近似，少一个 value 网络，调参面小。
+**为何 LLM 里常弱化 PPO+GAE**：要同时训 policy+critic，奖励稀疏、长序列 credit 难；**DPO** 离线省 rollout；**GRPO** 用同 prompt 多样本组内均值代替 `V`。公式与实现见 **`05-1` §1～§2**。
 
-不是“PPO/GAE 过时”，而是**在 LLM 对齐里常因成本与稳定性被更轻方法替代**；有些高价值任务仍会用 PPO/GAE。
-
-### 面试怎么答
-
-「RLHF = 偏好数据训 RM + PPO 在 RM 回报下更新生成策略，并用 KL 锚住参考模型；比 SFT 更贴『偏好』但系统复杂。」
+**面试口述**：「RLHF = 偏好训 RM + PPO 用 RM 分更新策略并 KL 锚 SFT；RM 一般整条一个分，PPO 用 GAE 和 Value，工程重，所以很多任务改 DPO 或 GRPO。」
 
 ---
 
@@ -110,26 +103,25 @@ L_SFT = - Σ_t log π_θ(y_t | x, y_<t)   （再对 batch 取平均）
 
 ---
 
-## 4. GRPO：和 PPO 差在哪（原理一句话 + 衔接 12）
+## 4. GRPO：和 PPO 差在哪
 
-**设定**：对同一 prompt `x` **一次采 G 条**完整回答 `{y_i}_{i=1..G}`，每条算标量回报 `R_i`（可来自执行单测、数学 verifier、格式分、RM 等）。
+**设定**：同一 prompt `x` 采 **G 条**完整回答，每条得标量 `R_i`（单测、verifier、RM、Judge 等）。
 
-**核心**：不主要依赖 **学出来的 `V(s)`**，而用 **组内统计量** 当 baseline，例如  
-`A_i = (R_i - mean({R})) / std({R})`（或只用减均值、或排名替代）。
+**核心**：用 **组内** `A_i = (R_i - μ_G) / (σ_G + ε)` 当优势，不训单独的 `V(s)`。策略项对整条序列的 `Σ_t log π_θ(y_{i,t}|·)` 加权，并常加 **KL(π_θ ‖ π_ref)**。
 
-**策略梯度形态**：在 `π_θ` 上对 **整条 `y_i`** 的 log-prob（常 sum over tokens）乘 `A_i` 做上升步，并通常 **仍加 KL 到参考**，防止为刷分乱码。
+```
+策略项 ≈ - mean_i( A_i · Σ_t log π_θ(y_{i,t}|x,y_{i,<t}) ) - β·KL
+```
 
-**和 PPO 关系**：PPO 用 **GAE + clip** 精细控 **逐步** credit；GRPO 用 **「同 prompt 多答案」互相当基线**，适合 **可自动验分** 的任务，**弱化 critic**。逐步公式与实现坑见 `**12` §5**。
+**和 PPO**：PPO 逐步 GAE + clip + critic；GRPO **同条件多答案互相当 baseline**，适合 **可自动打分** 的任务。动态采样、异步 Judge、loss 平均见 **`05-1`**。
 
-### 面试怎么答
-
-「GRPO = 同 prompt 多样本 + 组内中心化/标准化回报当优势；省 critic、吃可验证奖励；和 PPO 比更粗粒度但在代码数学上好用。」
+**面试口述**：「GRPO = 同 prompt 采 G 条，组内标准化 R 当 A，乘整条 log π，加 KL；省 critic，适合可验证奖励。」
 
 ---
 
 ## 4.1 GSPO、DAPO、VAPO：相对 GRPO 优化什么
 
-下面按 **「和 GRPO 差在哪」** 记；**GSPO** 在长序列推理 RL 里近年面试权重高，建议与 `**12` §7～§8** 对照背诵。
+下面按 **「和 GRPO 差在哪」** 记；实现细节见 **`05-1`**。
 
 ### GSPO（Group Sequence Policy Optimization）
 
@@ -163,7 +155,7 @@ L_SFT = - Σ_t log π_θ(y_t | x, y_<t)   （再对 batch 取平均）
 在 **GRPO 骨架** 上常见增强（阿里 / NeMo 等实现口径）：
 
 - **Clip-Higher**：`ε_low ≠ ε_high` 的非对称 clip，避免「好 token」过早被 clip 封顶。  
-- **Dynamic Sampling**：只保留 **组内奖励有方差** 的 prompt（如 `std(R_i)>0`），跳过 **全对/全错** 的无效组，提高有效梯度占比。  
+- **Dynamic Sampling**：`std(R_i)` 过小则 **整组跳过**（实现与 loss 平均见 **`05-1` §6**）。  
 - **Token-Level Loss 权重**、**过长回答的 reward shaping**：缓解 **异长序列** 与截断噪声。
 
 相对 GRPO：**更稳、更少算力浪费在零梯度组**；工程调参项更多。
@@ -356,46 +348,17 @@ lr=2e-4, warmup_ratio=0.03, weight_decay=0.0~0.1（按任务扫）
 
 **面试口述**：二值适合可验证任务，连续适合主观打分但要防 RM 偏，阶梯是折中；选型看任务能否规则判定。
 
-### 9.2 用大模型做奖励打分：在干什么、工程怎么做
+### 9.2 用大模型做奖励打分（概要）
 
-**在干什么**：用 **强 LLM（Judge）** 读 `(prompt, response)` 或 `(response_a, response_b)`，输出 **分数、排序或 rubric 各维分数**，作为 **RL 的 reward** 或 **造 DPO 偏好对**（即 **RLAIF**，§5）。
-
-**典型流水线**：
+**作用**：强 LLM（Judge）读 `(x, y)` 或成对回答，输出分数或排序，作 **RL 的 R** 或 **RLAIF 造 DPO 偏好对**。
 
 ```text
-rollout：当前策略 π_θ 对 x 生成 y
-  → 组装 judge prompt（含 rubric、可选参考答案、安全规则）
-  → 调 Judge API / 本地 vLLM（温度常设 0 或很低）
-  → 解析输出（JSON 分数 / A>B / 1-5 分）
-  → 写入 reward 表 / 直接进 PPO·GRPO buffer
-  →（可选）与人标或规则分融合：R = w_rule·R_rule + w_llm·R_llm
+rollout →（异步）Judge 打分 → 写回 buffer → 训练时 re-forward 算 loss
 ```
 
-**工程要点**：
+**工程要点（一句一条）**：Judge **异步队列**，不同步卡训练；**缓存** `(hash(x,y), version)`；**JSON 解析**（见 `15` §5.1）；**冻结强模型** 当 Judge，别用正在训的 π_θ；成本高时可 **规则分 + 子集 Judge** 或 **离线偏好 → DPO**。
 
-1. **与训练解耦**：Judge **异步批处理**（队列 + worker），别在 **训练 critical path** 上同步调 API。
-2. **缓存**：`(hash(x,y), judge_version) → score`，同一回复 **不重复烧钱**。
-3. **解析鲁棒**：强制 Judge **JSON 输出**（`15` §5.1）；失败 **重试 / 默认低分 / 丢弃样本**。
-4. **版本锁**：Judge **模型名、prompt 模板、温度** 进 metadata；换 Judge = **新实验**，不可与旧曲线横比。
-5. **成本与吞吐**：大 rollout 时 Judge 往往是 **瓶颈** → 采样 **子集打 LLM 分**、其余用 **小 RM** 或 **规则**；或 **离线造偏好 → DPO** 减少在线 Judge 次数。
-6. **防串通**：Judge 别用 **正在训的同一 checkpoint**；用 **更强、冻结** 的模型。
-
-**在线 vs 离线打分**：纯同步在线（rollout 完立刻等 Judge 返回再更新）几乎没人用，会把训练卡死。主流做法是**异步**：策略 rollout 产生样本后直接丢队列继续训练，Judge worker 后台打分写回；下次采样优先用已打好分的样本，或规则分与 LLM 分混合使用。
-
-**异步带来的 off-policy gap**：rollout 时用的策略是 π_old，等 Judge 打分回来时策略可能已经更新到 π_current，样本就成了 off-policy。如果直接用旧策略生成的轨迹算梯度，会引入偏差。常见处理方式：
-- **重要性采样校正**：在策略梯度项里乘 importance ratio `π_current(y_i) / π_old(y_i)`（或其截断版），把旧策略样本的贡献重新加权到当前策略下。
-- **样本时效限制**：队列设置最大长度或最大更新步数，超过就丢弃（staleness threshold），保证样本最多只落后 K 次更新。
-- **Value model 辅助**：当有 critic V 时，可以用 V-trace、Retrace 或类似 off-policy correction 算法；即使 GRPO 系不训 V，V 仍可作为 baseline 降低方差。
-- 实际工程里很多人选择**容忍轻度 off-policy**：只要策略更新步长不大、队列不长，group baseline 本身就有一定鲁棒性，就不做完整 importance sampling，直接用 delayed reward 训练。
-
-**分数归一化（跨组/跨 batch 漂移）**：LLM Judge 不同 batch 打分量级可能差很大（一组 1-2 分，下一组 10-100 分），直接喂原始分会导致 advantage 尺度不稳、梯度爆炸或消失。常见处理方式：
-
-- **Group 内 z-score**（GRPO/GSPO 默认）：同一 prompt 的 G 条样本内部做 `(R_i - μ_G) / (σ_G + ε)`，把本组内相对好坏拉到同一尺度。
-- **Running whitening**：维护最近若干 batch 或全局的 reward 均值和方差，对新 reward 做标准化后再进 advantage 计算。
-- **Per-batch normalization + clip**：每个 batch 内部归一后，再把 advantage clip 到合理范围（如 [-5, 5]）。
-- 无论哪种，都建议在 advantage 进入策略梯度前再做一次 **全局或滑动窗口归一化**，防止量级漂移直接影响梯度大小。
-
-**Value model（critic）的作用**：当使用传统 PPO（有 V）时，LLM Judge 只提供 **原始奖励 r**，Value model V(s) 的作用是估计「在当前状态下的预期回报」，用来计算 advantage（GAE）。即使 r 的绝对值在不同 batch 漂移，V 学到的是相对 baseline，能部分吸收漂移，降低策略梯度方差。GRPO/GSPO 路线通常**弱化或不使用 V**，直接用 group 内统计做 baseline，因此 group 内归一化就显得尤为重要。
+**深度专题**（异步 off-policy、只存样本不存梯度、re-forward 算 ratio、组内 z-score、动态采样 mask 与 **loss 对 valid 做 mean**）：**`05-1` §3～§6**。
 
 ### 9.3 大模型做奖励打分，要不要微调？
 
@@ -422,9 +385,7 @@ rollout：当前策略 π_θ 对 x 生成 y
 
 **面试一句**：「在线 RL 要稳定奖励，长期用 **专人标训的小 RM** 或 **冻结强 Judge+缓存**；RLAIF 造偏好可以 **不微调 Judge，只微调策略 via DPO**。」
 
-### 面试怎么答
-
-「LLM Judge 主流异步打分，训练不等返回；异步会让样本变成 off-policy，可用 importance ratio 校正或限制样本时效（staleness threshold）；分数漂移用 group z-score 或 running whitening；有 V 时它可做 baseline 或 off-policy correction，GRPO 系主要靠 group 内统计。」
+**面试口述**：「Judge 异步打分；训练用 buffer 里已打分的样本 re-forward；组内 z-score；无方差 group 过滤。细节见 05-1。」
 
 ---
 
@@ -470,11 +431,7 @@ rollout：当前策略 π_θ 对 x 生成 y
 
 - SFT = **TF 下的逐步 CE**；与推理 **分布错位** → exposure bias。  
 - RLHF = **RM（成对偏好）+ PPO（KL 约束）**；DPO = **(y_w,y_l)+π_ref 的成对 sigmoid loss**，**离线**、无 value。  
-- GRPO = **组内相对回报当优势**，接 `**12` §5** 展开。  
-- **GSPO** = 组采样保留 + **序列级 importance** 降长链方差；**DAPO/VAPO** = 在 GRPO/PPO 上的 **采样/clip/value** 增强。  
-- **LoRA / QLoRA / LoRA+ / DoRA** = 省参数量级不同（量化 vs 学习率分解 vs 幅值-方向）。  
-- RLAIF = **偏好数据来源**；**loss 仍是 RM/PPO/DPO 家族**。  
-- **§8**：**π_SFT / π_ref** 存档；SFT **平台期+格式稳+任务信号非零非饱和** 再 RL。  
-- **§9**：奖励 **二值/连续/阶梯**；LLM Judge **异步+缓存**；长期 **训 RM** vs 短期 **API 造 DPO**。  
-- **§10**：**8B→30B** 用 **同一评测 + 失败模式 + 成本**，非越大越好。
+- GRPO = **组内相对回报当优势**；**GSPO/DAPO/VAPO** = 序列级 ratio / 动态采样 / 加强 value。  
+- **工程细节** → **`05-1`**（GAE、buffer、异步 Judge、动态采样、loss 平均）。  
+- LoRA 系、RLAIF、**§8 SFT→RL**、**§9 奖励形态**、**§10 模型选型** 见正文。
 

@@ -1,6 +1,4 @@
-# 04｜显存估算、数据/模型并行、ZeRO、FlashAttention 与训练排障
-
-**建议阅读顺序（本篇内部）**：先 **单卡显存由哪些项组成**（否则后面「并行省了什么」说不清）→ **数据并行 / DDP**（最常见）→ **模型并行：TP、PP、SP**（为何会 bubble、为何要流水）→ **和 ZeRO 的关系**（ZeRO 仍是「数据并行 + 分片状态」）→ **Megatron 类配置**（进阶）→ **Checkpoint / FlashAttention** → **变慢与碎片**。
+# 04｜训练显存、并行（DDP/ZeRO/Megatron）与 FlashAttention
 
 术语：英文 **pipeline** 本文统一叫 **「流水线并行」** 或保留 **pipeline parallel**，不译成含混的「管道法」。**HBM** 指 GPU 上容量大、相对慢的那层显存（相对片上 SRAM）。
 
@@ -16,7 +14,7 @@
 4. **激活**（与 batch、序列长、隐藏维、层数有关；**长序列 + 标准 Attention 物化 L×L 分数矩阵** 时常是 OOM 首因）
 5. **临时区**：通信 buffer、cuBLAS workspace、分配器碎片等
 
-**推理**：主要是 **权重 + KV Cache + 少量激活**。
+**推理**：主要是 **权重 + KV Cache + 少量激活**（Prefill/Decode/KV 机制见 **`08`**）。
 
 ### 面试怎么答
 
@@ -38,13 +36,13 @@
 
 **推理 14B BF16**：权重约 `14e9×2 ≈ 28 GB`，再加 KV 与框架，**40GB+** 更现实。
 
-**KV Cache（与 02 一致）**：每层约 `2 × batch × seq × num_kv_heads × head_dim × dtype_bytes`，乘层数。MQA/GQA/MLA 通过 **少算少存 K/V 头** 或 **压缩 KV** 省钱。
+**KV Cache（推理）**：每层约 `2 × batch × seq × num_kv_heads × head_dim × dtype_bytes`，乘层数。公式与机制见 **`08` §2**；MQA/GQA/MLA 见 **`06`**。
 
 ### 2.1 激活：为何与 L、L² 有关
 
 - 与 **B（batch）·S（序列）·H（隐藏）·层数** 成正比的 **张量链** 总要占一份。  
 - 若标准实现把注意力 **分数矩阵整块物化**（materialize，即真的分配出整块显存）为 `**B × heads × S × S`**，则 **S 翻倍约 ×4** 这一项。  
-- **FlashAttention** 用分块在 **片上 SRAM** 多算少写 **HBM**，降低 **峰值与带宽压力**；不是把渐近复杂度 magically 变成 O(S)。
+- 若物化 **S×S** 注意力分数矩阵，激活随 S **平方**涨；**FlashAttention** 降峰值见 **§9**（不是把复杂度变成 O(S)）。
 
 ### 2.2 多卡之后：激活为何常常「不除以卡数」
 
@@ -316,9 +314,27 @@ GBS(梯度累加步数) = MBS × DP × GAS
 
 ## 9. Gradient Checkpointing 与 FlashAttention
 
-**Checkpointing**：前向少存激活，反向缺了再 **重算一段前向** → **省显存、多花算力**（wall-clock 常慢 **二到五成** 量级，依粒度）。
+### 9.1 Gradient Checkpointing
 
-**FlashAttention**：在 **SRAM** 上分块做 attention，**少把大中间结果写回 HBM**；常配合 **online softmax**。目标是 **带宽与峰值**，不是换 softmax 公式。
+前向 **少存中间激活**，反向时对缺的那段 **重算前向** → **省显存、多花算力**（wall-clock 常慢二到五成，依 checkpoint 粒度）。
+
+### 9.2 FlashAttention 原理（训练侧算子）
+
+**不改 attention 公式**，改 **实现**：`softmax(QK^T/√d_k)V` 不变。
+
+**朴素实现的问题**：要物化 **L×L** 的分数矩阵 S（或 P）到 **HBM**（大容量、相对慢的显存）→ **峰值 O(L²)**，且大量时间在 **读写 HBM**，算力空转。
+
+**做法**：
+
+1. **分块（Tiling）**：Q、K、V 切成小块，在 **SRAM**（片上快存储）里算，**不把整块 L×L 写回 HBM**。  
+2. **Online Softmax**：分块时不能对整行一次 softmax；对每行维护运行中的 **最大值 m** 和 **归一化分母 ℓ**，每来一块更新 m、ℓ 并修正已有贡献，多块拼起来 **等价整行 softmax**。  
+3. **IO-Aware**：目标是最小化 **HBM 访问字节数**；**计算仍是 O(L²)**，但更快、峰值更低。
+
+**与推理的关系**：Flash 是 **单层 attention 怎么算**；vLLM 是 **多请求 KV 怎么排**（**`08` §4**）。二者常叠用。
+
+### 面试口述
+
+「FlashAttention 分块 + online softmax 少写 L×L 到 HBM；Checkpointing 用重算换激活显存。」
 
 ---
 

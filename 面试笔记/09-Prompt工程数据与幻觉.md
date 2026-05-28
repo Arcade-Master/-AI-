@@ -1,8 +1,18 @@
 # 09｜Agent 工程、Harness 与 Prompt / 幻觉
 
-本篇整合两条线：**LangChain → LangGraph → Harness Engineering**（Agent 框架与生产运行时），以及 **Prompt / 数据 / 幻觉**（产品向接口与系统缓解）。与 **`13` RAG**、**`15` Agent 架构**、**`05` 对齐** 互补阅读。
+本篇两条线，**分工明确、不与他篇重复**：
 
-**建议阅读顺序**：第一部分（框架演化）→ 第二部分（Harness 与生产问题）→ 第三部分（为什么是 Graph）→ 第四部分（Prompt 与幻觉）。
+1. **LangChain / LangGraph / Harness**：框架与 **生产运行时**（State、checkpoint、校验、预算）  
+2. **Prompt / 数据 / 幻觉**：产品向接口与系统缓解  
+
+| 主题 | 只看这一篇 | 别去别处找 |
+|------|------------|------------|
+| LangGraph、Harness、State | **本篇** | — |
+| ReAct / Plan&Execute / Reflection、Tool 闭环 | **`15`** | 本篇只讲「Graph 里可挂 ReAct node」 |
+| RAG 检索、HyDE、PDF | **`13`** | — |
+| 对齐 DPO/RLHF | **`05`** | — |
+| Prefill/Decode/KV/vLLM | **`08`** | — |
+| 强制 JSON / grammar | **`15` §5.1** | — |
 
 **演化路线**：
 
@@ -12,11 +22,6 @@ LangChain（LLM 应用组件库 / Chain 流水线）
   → Harness Engineering（长期稳定：State、调度、校验、预算、恢复）
 ```
 
-| 本篇侧重 | 可对照 |
-|----------|--------|
-| 框架、Runtime、Harness | `15` Agent、Tool、上下文 |
-| Prompt、数据、幻觉 | `13` RAG、`05` DPO/RLAIF |
-| 约束解码、强制 JSON | `15` §5.1 |
 
 ---
 
@@ -128,13 +133,7 @@ class AgentState:
 
 ### 1.5 LangGraph 与 ReAct 的关系（别混层级）
 
-**ReAct** 是 **推理策略**（thought → action → observation 循环）。**LangGraph** 是 **运行时编排框架**。完全可以在 LangGraph 的某个 node 里跑 ReAct：
-
-```text
-Graph Runtime → Planner Node → ReAct Executor Node → Verifier Node
-```
-
-LangGraph 比 ReAct **高一个层级**：ReAct 管「模型怎么想一步」；LangGraph 管「系统怎么跑很多步、怎么分叉、怎么恢复」。
+**ReAct** = 单步推理策略（thought → action → observation）。**LangGraph** = 多步 **运行时图**。可在某个 node 里跑 ReAct，但 **ReAct/Plan&Execute/Reflection 怎么嵌套、Tool 怎么闭环** 见 **`15` §2～§5**，本篇不展开。
 
 ---
 
@@ -160,18 +159,20 @@ LangGraph 的真正价值不是「更复杂的 LangChain」，而是把 Agent En
 
 ### 1.7 LangGraph 的工业级能力（对照记忆）
 
-1. **Durable execution**：中断后可从 checkpoint 继续，长任务不必从头跑。  
-2. **Checkpointing**：可 rollback；long-horizon agent 中途失败否则很难救。  
-3. **Human-in-the-loop**：例如 Agent 说「要删库」→ 等人批准 → 再执行 destructive tool。  
-4. **Multi-agent orchestration**：多 Agent 分工、并行子图、汇总 verifier。  
+1. **Durable execution**：中断后可从 checkpoint 继续，长任务不必从头跑。
+2. **Checkpointing**：可 rollback；long-horizon agent 中途失败否则很难救。
+3. **Human-in-the-loop**：例如 Agent 说「要删库」→ 等人批准 → 再执行 destructive tool。
+4. **Multi-agent orchestration**：多 Agent 分工、并行子图、汇总 verifier。
 5. **Streaming state updates**：状态增量推给 UI/日志，便于观测。
 
-| 类比 | LangChain | LangGraph |
-|------|-----------|-----------|
-| Web | React components | Node.js runtime |
-| OS | 函数库 | 操作系统（调度+状态） |
-| ML | sklearn pipeline | distributed runtime |
-| Backend | utility library | workflow orchestrator |
+
+| 类比      | LangChain        | LangGraph             |
+| ------- | ---------------- | --------------------- |
+| Web     | React components | Node.js runtime       |
+| OS      | 函数库              | 操作系统（调度+状态）           |
+| ML      | sklearn pipeline | distributed runtime   |
+| Backend | utility library  | workflow orchestrator |
+
 
 ---
 
@@ -255,7 +256,7 @@ def planner(state):
 
 - **Planner Node**：`goal, completed_steps, current_progress`  
 - **Code Editor Node**：`target_file, bug_description, relevant_code`  
-- **Verifier Node**：`generated_patch, unit_test_results`  
+- **Verifier Node**：`generated_patch, unit_test_results`
 
 这样能显著降低 attention noise、幻觉与 drift。
 
@@ -279,12 +280,12 @@ START → Planner → Executor → Verifier
 
 Harness = **控制整个 graph runtime 的系统**，常见包括：
 
-1. **State Manager**：working memory、摘要、tool 输出、plan、metadata。  
-2. **Scheduler**：决定下一步跑哪个 node，例如 `if verification_failed: goto("reflection")`。  
-3. **Context Constructor**：**给不同 node 构造最小必要上下文**——很多 production Agent 的核心竞争力在这里。  
-4. **Verifier System**：`run_unit_test()`、`check_schema()`、`check_grounding()`——**不信 LLM 自说自话**，runtime 验证。  
-5. **Memory Compression**：`summary = summarize(old_trajectory)`，否则长任务必 context 爆炸。  
-6. **Retry Policy**：`if tool_timeout: retry(3)`。  
+1. **State Manager**：working memory、摘要、tool 输出、plan、metadata。
+2. **Scheduler**：决定下一步跑哪个 node，例如 `if verification_failed: goto("reflection")`。
+3. **Context Constructor**：**给不同 node 构造最小必要上下文**——很多 production Agent 的核心竞争力在这里。
+4. **Verifier System**：`run_unit_test()`、`check_schema()`、`check_grounding()`——**不信 LLM 自说自话**，runtime 验证。
+5. **Memory Compression**：`summary = summarize(old_trajectory)`，否则长任务必 context 爆炸。
+6. **Retry Policy**：`if tool_timeout: retry(3)`。
 7. **Budget Controller**：token、latency、API cost，否则线上会烧钱。
 
 ---
@@ -453,7 +454,7 @@ planner → executor → verifier
 **缓解（系统向，不单靠 prompt）**：
 
 - **RAG + 引用链**：生成前注入 chunk；生成后 **span–chunk 重叠**、**引用 id 是否存在**；失败则拒答或重检索（见 `13`）。  
-- **约束解码**：必须 JSON / 必须 citation 字段时用 **grammar**（四层手段见 **`15` §5.1**）。  
+- **约束解码**：必须 JSON / 必须 citation 字段时用 **grammar**（四层手段见 `**15` §5.1**）。  
 - **偏好对齐**：事实性/有据性维度做人标或 RLAIF，走 DPO/RLHF（见 `05`）——标注维度是「是否胡编」，loss 仍是成对或 RM+PPO。  
 - **工具闭环**：算术、查库、实时状态 **必须走执行器**；reward 可对执行结果二值化，与 GRPO 友好。
 
@@ -477,3 +478,4 @@ planner → executor → verifier
 - **Harness**：按 node 构造上下文、Verifier、压缩、重试、预算、恢复——production 难在 runtime。  
 - **任务天然是 Graph**：路径依赖运行时 observation 动态分叉。  
 - **Prompt / 数据 / 幻觉**：Prompt 是接口设计；幻觉要 RAG + 校验 + 工具 + 对齐。
+

@@ -1,8 +1,12 @@
-# 15｜Agent：上下文、架构、与 LLM 区别、Tool 调用
+# 15｜Agent 架构：推理模式、上下文、Tool 与 Agentic RL
 
-**建议阅读顺序（本篇内部）**：**Agent vs LLM** → **架构分块** → **ReAct / Plan&Execute / Reflection（并列还是嵌套）** → **上下文与 Tool** → **Agentic RL 与工具 Reward**。
+**本篇专讲 Agent 产品形态**：和 LLM 的边界、**ReAct / Plan&Execute / Reflection**、上下文分层、**Tool 调用与强制 JSON**、**Agentic RL Reward**。
 
-RAG 详见 `**13`**；Prompt 见 `**09`**；GRPO/GSPO 见 `**05`/`12**`。
+| 主题 | 本篇 | 他篇 |
+|------|------|------|
+| LangChain/LangGraph/Harness 运行时 | **`09`** | — |
+| RAG 检索、HyDE、冲突手册 | **`13`** | — |
+| GRPO/GSPO、对齐 loss | **`05` / `05-1`** | — |
 
 ---
 
