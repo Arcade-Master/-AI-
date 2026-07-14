@@ -38,6 +38,21 @@
 
 **面试收口**：「MoE 省的是 **每 token 的条件计算**；省不省 **显存** 要看是否分片/卸载；训练难在 **全局专家状态 + 路由与均衡 + 通信**，不是单纯和 dense 比 FLOPs 谁大。」
 
+### 1.0.0 训练时专家会冻结吗？
+
+**标准全量预训练 / SFT / RL**：**不冻结**。**Router（门控）** 与 **全部 E 个 expert 的 FFN 权重** 都参与优化；**Attention、Embedding、LM Head** 等共享部分同样更新。
+
+**和「冻结」容易混的两件事**：
+
+| 现象 | 是不是冻结 expert |
+|------|-------------------|
+| 某 token 只走 top-k expert | **不是**——没被选中的 expert **这一步梯度为 0**，参数仍在，下一步别的 token 可能更新它 |
+| EP：每张卡只放一部分 expert | **不是**——只是 **权重分片存放**；本卡上的 expert **仍训练** |
+| 推理只加载/只算被路由到的 expert | **部署省算力**，与训练无关 |
+| LoRA / 只训 router / 只训部分 expert | **人为 PEFT 配方**，不是 MoE 默认 |
+
+**优化器**：实现里常为 **所有 expert 都建 optimizer state**（m、v），即使某步某 expert 没吃到梯度，**显存仍占满 E 份**——这也是训练比「激活参」看起来贵的原因之一。
+
 ### 1.0.1 举例：Qwen3-30B-A3B（MoE） vs 同代约 32B dense
 
 以 Hugging Face 卡片的 **Qwen3-30B-A3B** 为例（写作时口径）：**总参约 30.5B**，**每 token 激活约 3.3B**，**128 个 expert、每 token 激活 8 个**。对比 **约 32B、全量激活的 dense**（如 Qwen3-32B 一类，具体以官方卡为准）：
@@ -56,7 +71,7 @@
 
 ### 1.2 负载均衡：训练里常用 trick（不止一个 loss）
 
-- **Auxiliary load-balancing loss（最常见）**：让 **「门控预测的概率分布」** 与 **「本 batch 实际落到各 expert 的 token 流量」** 不要长期错位，防 **routing collapse**（全挤在少数 expert）。实现里常是 **`E · Σ f_e · P_e`** 型或其变体，**系数要小**，否则主任务 CE 被带偏。  
+- **Auxiliary load-balancing loss（最常见）**：`E·Σ_e f_e·P_e` 型，防 **少数 expert 上 f 与 P 双高** 的塌缩（见 §1.2 末公式段），**不是** 简单的「f 必须等于 P」。系数要小，否则带偏主 CE。  
 - **Capacity factor**：每个 expert **每步最多吃多少 token**；过小 → **大量溢出/改投** 伤质量；过大 → **负载仍可能不均** 且浪费算力。要 **扫 dev**。  
 - **z-loss（门控稳定）**：压门控 logits **无界漂移**，减轻极端 one-hot 路由与数值炸。  
 - **Router 侧工程**：**noisy top-k / 温度**（实现名各异）在训练早期 **增加探索**，减轻「一开始就锁死少数 expert」；有的实现加 **router z-loss / auxiliary entropy** 鼓励路由别太极端。  
@@ -70,11 +85,29 @@
 
 **门控**：每个 token 产生到 E 个 expert 的 logits（或打分），取 **top-k** 得到路由权重 `g_i,e`（常为 softmax 后稀疏）。前向只算被选中的 expert；反向梯度 **按路由权重回传** 到门控与 expert。
 
-**负载均衡 auxiliary loss（典型形态，记结构即可）**：令 `f_e` = 本 batch 中路由到 expert e 的 **token 比例**，`P_e` = 门控对 e 的 **平均概率**。常见一项形如 **`E · Σ_e f_e · P_e`**（或变体），直觉是 **惩罚「路由概率」与「实际流量」长期不一致**——避免所有 token 永远只打 expert0（**routing collapse**）。实现里常乘小系数与主 CE 相加。
+**负载均衡 auxiliary loss（Switch 系典型形态）**：令 `f_e` = 本 batch **实际** 路由到 expert e 的 token 比例（离散 top-k 统计），`P_e` = 门控对 e 的 **平均 softmax 概率**（对 token 平均）。常见
+
+```
+L_aux = α · E · Σ_e f_e · P_e
+```
+
+**最小化** 这项时，惩罚的不是「|f_e − P_e| 不一致」，而是 **同一个 expert 上 f_e 与 P_e 同时偏大**（**共塌缩**）：若几乎全 token 都进 expert0，则 `f_0≈1`；门控若也总给 expert0 高概率，则 `P_0≈1`，乘积 `f_0·P_0≈1`，loss 很大。理想均匀时 `f_e≈P_e≈1/E`，每项约 `1/E²`，总和约 `1/E`，比塌缩时小得多。
+
+因此梯度会同时推：**别把流量堆在少数 expert（压低高 f_e 上的 P_e）**，也 **别让门控长期只偏爱已很忙的 expert**。这是 **防 routing collapse**，不是逐 expert 做「预测概率必须等于实际比例」的回归。
+
+**易混**：有的实现另加 **f_e 方差 / (f_e−1/E)²** 等，那才是直接逼 **流量均匀**；与 `Σ f_e P_e` 可并存，别混成一种 loss。
 
 **capacity factor**：每个 expert **每步最多处理多少 token**；超过则 **溢出 token 被丢或改投**，是 **吞吐与质量** 的硬开关。
 
-**z-loss（门控稳定）**：对门控 logits 加 **`log^2(Z)`** 类惩罚（Z 为归一化常数相关项），抑制 logits **无界漂移**，减少数值炸与「极端 one-hot 路由」。
+**z-loss（门控稳定，ST-MoE / Switch 系）**：对每个 token 的门控 logits `z_{t,e}`，softmax 分母是 `Z_t = Σ_e exp(z_{t,e})`。常见附加项（系数很小）：
+
+```
+L_z = (1/T) · Σ_t  [ log(Z_t) ]^2 = (1/T) · Σ_t  [ log Σ_e exp(z_{t,e}) ]^2
+```
+
+**「无界漂移」指什么**：主任务 CE + 负载均衡项 **几乎不限制 logits 的绝对大小**。门控 `z = W·h` 在训练中，权重和 `z` 可以 **整体越来越大、或 max−min 越拉越大**，softmax 越来越尖 → 路由接近 **极端 one-hot**；FP16 下 `exp(z)` 易 **溢出/NaN**。这叫 logits 尺度 **无自然上界地往大漂**，不是指 expert 参数乱跑。
+
+**z-loss 在干什么**：最小化 `log(Z_t)^2` 会把 **`log Z`（log-sum-exp）压到 moderate 区间**，等价于 **别让门控 logits 整体飙太大**，从而 softmax 别过尖、数值别炸。和 **负载均衡 loss** 分工不同：后者管 **流量是否堆在少数 expert**；z-loss 管 **门控数值尺度与路由是否过尖**。
 
 ### 面试怎么答
 
